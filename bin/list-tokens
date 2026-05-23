@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""List design-mcp tokens.
+
+Usage:
+    bin/list-tokens                 # active only
+    bin/list-tokens --all           # active + revoked
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
+
+from design_mcp.auth import list_tokens
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="List design-mcp tokens")
+    parser.add_argument("--all", action="store_true", help="include revoked tokens")
+    args = parser.parse_args()
+
+    rows = list_tokens(include_revoked=args.all)
+
+    if not rows:
+        print("(no tokens)")
+        return 0
+
+    print(f"{'ID':>4}  {'USER':<35}  {'CREATED':<20}  {'LAST USED':<20}  {'COUNT':>5}  STATUS")
+    print("─" * 110)
+    for r in rows:
+        status = "REVOKED" if r.revoked_at else "active"
+        last = f"{r.last_used_at:%Y-%m-%d %H:%M}" if r.last_used_at else "—"
+        created = f"{r.created_at:%Y-%m-%d %H:%M}"
+        note = f"  ({r.note})" if r.note else ""
+        print(f"{r.id:>4}  {r.user_email:<35}  {created:<20}  {last:<20}  {r.usage_count:>5}  {status}{note}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

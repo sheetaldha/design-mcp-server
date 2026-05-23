@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Issue a new design-mcp token for a user.
+
+Usage:
+    bin/issue-token --email hayden@acquirely.com.au "for claude.ai web"
+    bin/issue-token --email jeremy@acquirely.com.au
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+# Allow running as a script from anywhere in the repo
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
+
+from design_mcp.auth import issue_token
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Issue a new design-mcp token")
+    parser.add_argument("--email", required=True, help="user email (for record-keeping)")
+    parser.add_argument("note", nargs="?", default=None, help="optional note (e.g. 'for hayden's claude.ai')")
+    args = parser.parse_args()
+
+    raw, info = issue_token(args.email, note=args.note)
+
+    print()
+    print("━" * 60)
+    print(f"  Token issued for:  {info.user_email}")
+    print(f"  Token id:          {info.id}")
+    print(f"  Note:              {info.note or '(none)'}")
+    print(f"  Created:           {info.created_at:%Y-%m-%d %H:%M %Z}")
+    print()
+    print(f"  TOKEN (shown ONCE — store securely + give to user):")
+    print()
+    print(f"    {raw}")
+    print()
+    print(f"  To revoke:    bin/revoke-token {raw[:8]}…")
+    print("━" * 60)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

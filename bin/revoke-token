@@ -1,0 +1,38 @@
+#!/usr/bin/env python3
+"""Revoke a design-mcp token.
+
+Usage:
+    bin/revoke-token <token>
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+
+sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src"))
+
+from design_mcp.auth import AuthError, revoke_token
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Revoke a design-mcp token")
+    parser.add_argument("token", help="the 64-hex-char token to revoke")
+    args = parser.parse_args()
+
+    try:
+        was_revoked = revoke_token(args.token)
+    except AuthError as e:
+        print(f"✗ {e}", file=sys.stderr)
+        return 2
+
+    if was_revoked:
+        print("✓ token revoked")
+        return 0
+    else:
+        print("✗ token unknown or already revoked", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
