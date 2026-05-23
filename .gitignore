@@ -1,0 +1,59 @@
+# Secrets
+.env
+.env.local
+*.env
+!.env.example
+
+# Local-only status docs (per "docs stay local" rule)
+STATUS.md
+NOTES.md
+TODO.md
+*.local.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+*.egg
+.venv/
+venv/
+ENV/
+
+# Testing / coverage
+.tox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Designs cache (when test-generating via the server)
+designs-output/

@@ -1,0 +1,32 @@
+[project]
+name = "design-mcp-server"
+version = "0.0.1"
+description = "Hosted MCP server that generates new microsite HTML+manifest from chat, commits to microsite-design-skills repo"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+    "anthropic>=0.30.0",        # LLM calls for HTML generation
+    "psycopg[binary]>=3.1.0",   # token DB
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",              # manifest format
+    "beautifulsoup4>=4.12.0",   # post-gen HTML audit
+    "requests>=2.31.0",
+    "uvicorn>=0.27.0",          # HTTP transport for production
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+design-mcp = "design_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
