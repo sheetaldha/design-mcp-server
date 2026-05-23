@@ -1,0 +1,173 @@
+# Landing Page family — Skill A's contract.
+# This file is the SSOT for what a "Landing Page" microsite must contain.
+# Skill A's generation prompt enforces it; Skill B's audit agent validates against it.
+
+family: landing-page
+version: 1
+description: >
+  Single-page content site optimized for one CTA. Hero → 3 features → form → footer.
+  No multi-step survey, no OTP gate, no branching logic. If you need those, use
+  the survey-funnel family instead.
+
+# ────────────────────────────────────────────────────────────────────────────
+# Mandatory sections — every Landing Page MUST include all of these.
+# Skill A always generates them. Skill B's audit blocks if any are missing.
+# ────────────────────────────────────────────────────────────────────────────
+mandatory_sections:
+  - id: hero
+    description: Above-the-fold introduction
+    must_have:
+      - One <h1> (exactly one on the page, in this section)
+      - subheading paragraph
+      - LCP image with fetchpriority="high", explicit width+height, lazy=false
+      - Primary CTA button linking to the form (anchor #signup or scroll-into-view)
+    cms_field_map:
+      h1: contentModel.section_first_header     # or banners[0].heading depending on existing layout
+      subheading: contentModel.section_first_paragraph
+      image: contentModel.section_first_img
+      cta_label: contentModel.heading           # "Survey Button Text" in CMS UI (overloaded name)
+
+  - id: features
+    description: 3-card feature grid
+    must_have:
+      - "Exactly 3 cards (constraint of this family; 4-up = different layout)"
+      - Each card: icon OR small image, heading, paragraph
+      - All <img> have alt, width, height
+    cms_field_map:
+      heading: contentModel.section_second_header
+      card_1: { heading: contentModel.list_first_header, paragraph: contentModel.list_first_paragraph, image: contentModel.list_first_img, alt: contentModel.lfi_alt_text }
+      card_2: { heading: contentModel.list_second_header, paragraph: contentModel.list_second_paragraph, image: contentModel.list_second_img, alt: contentModel.lsi_alt_text }
+      card_3: { heading: contentModel.list_third_header, paragraph: contentModel.list_third_paragraph, image: contentModel.list_third_img, alt: contentModel.lti_alt_text }
+
+  - id: form
+    description: Single-step lead capture form
+    must_have:
+      - Name, email, phone fields (all required, HTML5 native validation)
+      - Submit button with CMS-driven label (matches hero CTA for consistency)
+      - Posts to /api/handle_Client_Lead_Submission (existing backend, integrations toggle via CMS)
+      - Privacy disclaimer link beneath
+    cms_field_map:
+      submit_label: contentModel.heading
+      privacy_link: pages[id=4].url
+
+  - id: footer
+    description: Legal + brand footer
+    must_have:
+      - Copyright line ("© <year> <client name>")
+      - Privacy + Terms links (CMS pages 4 + 5)
+      - Optional: social icons, contact info
+    cms_field_map:
+      copyright: derived from manage_clients.first_name + last_name
+      privacy_url: pages[id=4].url
+      terms_url: pages[id=5].url
+      disclaimer: manage_sites.redirect_to_article_page  # "Footer Disclaimer" in CMS UI
+
+# ────────────────────────────────────────────────────────────────────────────
+# Optional sections — Hayden/Jeremy can request these in the brief.
+# Skill A includes only the ones explicitly requested (or inferred from references).
+# ────────────────────────────────────────────────────────────────────────────
+optional_sections:
+  - id: testimonials
+    description: Customer quote carousel or grid (2-4 quotes)
+    cms_field_map: { content: contentModel.section_second_paragraph }
+  - id: faq
+    description: 3-6 Q&A pairs in accordion
+    cms_field_map: { content: contentModel.section_third_paragraph }
+    toggle: contentModel.page_sub_title  # "show" / "hide" — legacy string flag
+  - id: trust_badges
+    description: Row of partner/award/security logos
+    cms_field_map: { items: contentModel.col_one }  # legacy HTML bucket
+  - id: sticky_cta_mobile
+    description: Sticky bottom CTA bar on mobile that scrolls to form
+    cms_field_map: { enabled: derived from family options }
+
+# ────────────────────────────────────────────────────────────────────────────
+# SEO contract — mandatory <head> block. Skill A enforces; audit blocks if missing.
+# ────────────────────────────────────────────────────────────────────────────
+seo:
+  required:
+    title:           contentModel.meta_title
+    meta_description: contentModel.meta_description
+    canonical:       derived from manage_clients.domain + pages[i].url
+    og_title:        contentModel.meta_title
+    og_description:  contentModel.meta_description
+    og_image:        contentModel.section_first_img    # hero image
+    og_type:         "website"
+    twitter_card:    "summary_large_image"
+    twitter_title:   contentModel.meta_title
+    twitter_description: contentModel.meta_description
+    twitter_image:   contentModel.section_first_img
+    jsonld:
+      "@context": "https://schema.org"
+      "@type":    "WebPage"
+      "name":     contentModel.meta_title
+      "description": contentModel.meta_description
+
+# ────────────────────────────────────────────────────────────────────────────
+# Image contract — Skill A always generates with these attrs; audit enforces.
+# ────────────────────────────────────────────────────────────────────────────
+image_contract:
+  required_attributes: [src, alt, width, height]
+  loading: "lazy"             # default for all images
+  lcp_image_override:         # the LCP image (hero) MUST have:
+    fetchpriority: "high"
+    loading: "eager"
+  forbidden:
+    - "alt='my-img'"           # placeholder strings caught from legacy
+    - "alt=''"                  # empty alt fails audit (use empty quotes only for decorative)
+    - "missing dimensions"
+  placeholder_during_generation:
+    src_pattern: "https://picsum.photos/seed/<slug>-<region>/<w>/<h>"
+    note: "Skill B's Register Agent uploads real images via cms_upload_image and rewrites these URLs"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Color + typography — Option Y+ (CSS variables + bake-in fallback)
+# ────────────────────────────────────────────────────────────────────────────
+theming:
+  approach: "css-variables with baked-in :root fallback"
+  rationale: |
+    Local file:// preview shows correct colors (fallback applies).
+    Deployed via Skill B → CMS tokens.css overrides at runtime.
+    Hayden/Jeremy can tweak colors in CMS without regenerating HTML.
+  variables:
+    --color-primary:    "Skill A picks based on brief; CMS overrides"
+    --color-accent:     "Skill A picks; CMS overrides"
+    --color-text-body:  "#1F2937 default"
+    --color-bg-body:    "#FFFFFF default"
+    --font-heading:     "CMS subfooter_color (overloaded — stores font name)"
+    --font-body:        "Same as --font-heading by default"
+    --spacing-section:  "4rem default"
+  bake_in_fallback: true   # Skill A always writes a :root block with chosen defaults
+
+# ────────────────────────────────────────────────────────────────────────────
+# Tech stack constraints — Skill A's prompt forbids these
+# ────────────────────────────────────────────────────────────────────────────
+forbidden:
+  - 'jQuery (any version)'
+  - 'Bootstrap CSS or JS (any version) — Tailwind only'
+  - 'inline script blobs beyond ES module init'
+  - 'script tags injected into CMS-stored content'
+  - 'dangerouslySetInnerHTML patterns'
+  - '$(...) syntax'
+  - 'hardcoded host === "xyz.com" per-domain branches'
+  - 'external CDN script tags except Tailwind v4 CDN + a single analytics include'
+  - 'dead CDN URLs (e.g. stackpath.bootstrapcdn.com — shut down 2022)'
+
+required_in_head:
+  - 'Tailwind v4 via CDN: <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>'
+  - '<meta charset="utf-8">'
+  - '<meta name="viewport" content="width=device-width, initial-scale=1">'
+  - '<html lang="en">'
+  - 'Full SEO block (see seo.required above)'
+  - '<style>:root { --color-primary: ...; ... }</style> bake-in fallback'
+
+# ────────────────────────────────────────────────────────────────────────────
+# Output files Skill A produces per design
+# ────────────────────────────────────────────────────────────────────────────
+output:
+  files:
+    - "<slug>.html"          # full standalone, opens in browser correctly
+    - "page-meta.yaml"        # Scott-style frontmatter manifest
+    - "chat.md"               # human-readable summary of brief + decisions
+    - "assets/"               # any uploaded reference images (Hayden's inspiration)
+  destination: "designs/<YYYY-MM-DD>-<slug>/ in microsite-design-skills Bitbucket repo"

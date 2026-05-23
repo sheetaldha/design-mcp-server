@@ -13,7 +13,11 @@ import sys
 
 from mcp.server.fastmcp import FastMCP
 
+import yaml
+
 from .config import DesignConfig
+from .generators import landing_page as landing_gen
+from .repo import publish_design
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,6 +49,56 @@ def design_ping() -> dict:
         }
     except RuntimeError as e:
         return {"mcp": "ok", "config_error": str(e)}
+
+
+@mcp.tool()
+def design_landing_page(
+    brief: str,
+    user_email: str = "sheetal@acquirely.com.au",
+    references: list[str] | None = None,
+    slug: str | None = None,
+    publish: bool = False,
+) -> dict:
+    """Generate a new Landing Page microsite from a natural-language brief.
+
+    Args:
+        brief: what the site sells, target audience, tone, color preferences
+        user_email: attribution for the commit (defaults to Sheetal's email)
+        references: optional list of URLs / image refs / inspiration notes
+        slug: optional override; default is auto-slugified from the brief
+        publish: when True, commit + push to microsite-design-skills repo.
+                 When False (default), returns the HTML + manifest in-memory
+                 so the caller can preview before committing.
+
+    Returns:
+        {"slug", "html_size", "manifest", "chat_summary", "committed": bool, "design_dir"?, "commit_sha"?}
+    """
+    cfg = DesignConfig.from_env()
+    html, manifest, chat_summary = landing_gen.generate(cfg, brief, references=references, requested_slug=slug)
+
+    result = {
+        "slug": manifest.slug,
+        "html_size": len(html),
+        "manifest": manifest.model_dump(mode="json"),
+        "chat_summary": chat_summary,
+        "committed": False,
+    }
+
+    if publish:
+        manifest_yaml = yaml.dump(manifest.model_dump(mode="json"), sort_keys=False, default_flow_style=False)
+        design_dir, sha = publish_design(
+            cfg=cfg,
+            slug=manifest.slug,
+            html=html,
+            manifest_yaml=manifest_yaml,
+            chat_summary=chat_summary,
+            user_email=user_email,
+        )
+        result["committed"] = True
+        result["design_dir"] = str(design_dir)
+        result["commit_sha"] = sha
+
+    return result
 
 
 def main() -> None:
