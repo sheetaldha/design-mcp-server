@@ -489,9 +489,21 @@ def _build_chat_summary(brief: str, slug: str, family: str, manifest_dict: dict)
 
 
 def main() -> None:
-    """Entry point — stdio MCP for local dev (Day 1)."""
-    log.info("design-mcp-server starting (stdio, return-prompts mode)")
-    mcp.run()
+    """Entry point — transport chosen via DESIGN_MCP_TRANSPORT env var.
+
+    Local dev (default):  stdio              — for Claude Code local clients
+    EC2 production:       streamable-http    — for claude.ai web/mobile Custom Connectors
+    Legacy fallback:      sse                — older HTTP transport variant
+    """
+    import os
+    transport = os.getenv("DESIGN_MCP_TRANSPORT", "stdio").lower()
+    if transport not in {"stdio", "sse", "streamable-http"}:
+        raise SystemExit(
+            f"invalid DESIGN_MCP_TRANSPORT={transport!r}; "
+            f"use one of: stdio, sse, streamable-http"
+        )
+    log.info("design-mcp-server starting (transport=%s, return-prompts mode)", transport)
+    mcp.run(transport=transport)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
