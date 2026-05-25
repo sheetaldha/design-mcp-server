@@ -40,7 +40,14 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-mcp = FastMCP("design-mcp-server")
+# Honor HOST/PORT from env for production HTTP transport.
+# FastMCP's internal Uvicorn server reads these from constructor kwargs.
+import os as _os
+mcp = FastMCP(
+    "design-mcp-server",
+    host=_os.getenv("HOST", "127.0.0.1"),
+    port=int(_os.getenv("PORT", "8050")),
+)
 
 
 # ---------------------------------------------------------------------------
