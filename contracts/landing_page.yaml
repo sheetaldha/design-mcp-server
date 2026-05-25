@@ -137,6 +137,16 @@ theming:
     --font-heading:     "CMS subfooter_color (overloaded — stores font name)"
     --font-body:        "Same as --font-heading by default"
     --spacing-section:  "4rem default"
+  font_allowlist:
+    # Must match existing CMS font dropdown in leadloom (Section 1 of mapping doc).
+    # Skill A's generator MUST pick from this list; new fonts require a CMS change first.
+    - Montserrat
+    - Roboto
+    - Helvetica
+    - Nunito
+    - "Open Sans"
+    - "Century Gothic"
+  default_font: Montserrat
   bake_in_fallback: true   # Skill A always writes a :root block with chosen defaults
 
 # ────────────────────────────────────────────────────────────────────────────

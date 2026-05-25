@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 
 class HeroSection(BaseModel):
@@ -39,13 +39,35 @@ class SeoBlock(BaseModel):
     og_image_url: Optional[str] = None
 
 
+# Allowlist must match contracts/landing_page.yaml `font_allowlist`.
+# These are the only fonts the CMS supports today (existing leadloom dropdown).
+ALLOWED_FONTS = {
+    "Montserrat",
+    "Roboto",
+    "Helvetica",
+    "Nunito",
+    "Open Sans",
+    "Century Gothic",
+}
+
+
 class ThemeTokens(BaseModel):
     color_primary: str = "#1F4E79"
     color_accent: str = "#2E75B6"
     color_text_body: str = "#1F2937"
     color_bg_body: str = "#FFFFFF"
-    font_heading: str = "Inter, sans-serif"
-    font_body: str = "Inter, sans-serif"
+    font_heading: str = "Montserrat"
+    font_body: str = "Montserrat"
+
+    @field_validator("font_heading", "font_body")
+    @classmethod
+    def _font_must_be_allowed(cls, v: str) -> str:
+        if v not in ALLOWED_FONTS:
+            raise ValueError(
+                f"font '{v}' not in CMS allowlist {sorted(ALLOWED_FONTS)}. "
+                f"Adding a new font requires updating the leadloom CMS dropdown first."
+            )
+        return v
 
 
 class LandingPageManifest(BaseModel):
