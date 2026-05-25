@@ -1,0 +1,207 @@
+# Survey Funnel family — Skill A's contract.
+# This file is the SSOT for what a "Survey Funnel" microsite must contain.
+# Skill A's generation prompt enforces it; Skill B's audit agent validates against it.
+#
+# Sibling of contracts/landing_page.yaml — same SEO / image / theming / forbidden
+# patterns, different mandatory shape (multi-step form instead of 3-feature grid).
+
+family: survey-funnel
+version: 1
+description: >
+  Multi-step lead-capture form. Hero → 1..N step fieldsets → optional OTP → submit → footer.
+  Used for insurance / energy / solar quote comparison sites where the user answers
+  qualifying questions before reaching the contact-details + submit screen.
+  Linear progression only in v1 (no branching DSL). If you need a single CTA + 3-card
+  marketing page, use the landing-page family instead.
+
+# ────────────────────────────────────────────────────────────────────────────
+# Form engine — Survey Funnel-specific rules. Skill A enforces these constraints
+# when constructing the steps array; the manifest schema also enforces max length.
+# ────────────────────────────────────────────────────────────────────────────
+form_engine:
+  default_steps: 3
+  min_steps: 1
+  max_steps: 5
+  linear_only: true            # v1 — no `next_step_when` branching rules
+  otp_enabled:
+    type: bool
+    source: manage_sites.otp_enabled    # new typed boolean column, replaces the
+                                        # legacy `section_second_header === "yes"` string flag
+    description: >
+      Per-site toggle. When true, an OTP verification step renders between the
+      final fieldset and the submit POST. OTP UI posts to /api/verificationsms
+      (existing backend). When false, the final step submits straight to
+      /api/handle_Client_Lead_Submission.
+  submit_endpoint: /api/handle_Client_Lead_Submission   # shared with landing-page family
+  otp_endpoint:    /api/verificationsms                  # only used when otp_enabled=true
+  progression: >
+    Each step renders as a <fieldset> in a single HTML document. After step 1,
+    later steps carry the `hidden` attribute by default; minimal inline JS (no
+    framework) toggles visibility on "Next" button click. Linear: 1 → 2 → 3 →
+    (OTP if enabled) → submit.
+
+# ────────────────────────────────────────────────────────────────────────────
+# Mandatory sections — every Survey Funnel MUST include all of these.
+# Skill A always generates them. Skill B's audit blocks if any are missing.
+# ────────────────────────────────────────────────────────────────────────────
+mandatory_sections:
+  - id: hero
+    description: Above-the-fold introduction + funnel entry CTA
+    must_have:
+      - One <h1> (exactly one on the page, in this section)
+      - subheading paragraph
+      - LCP image with fetchpriority="high", explicit width+height, lazy=false
+      - Primary CTA button that scrolls to the first step (anchor #step-1)
+    cms_field_map:
+      h1: contentModel.section_first_header
+      subheading: contentModel.section_first_paragraph
+      image: contentModel.section_first_img
+      cta_label: contentModel.heading           # "Survey Button Text" in CMS UI (overloaded name)
+
+  - id: form
+    description: Multi-step lead-capture fieldset stack
+    must_have:
+      - "1..5 <fieldset> blocks, each with a step heading and one or more questions"
+      - "Each question has a name, type, label; type is one of text|email|tel|radio|select|checkbox"
+      - "Required questions use HTML5 native `required` attribute"
+      - "Steps after step 1 carry `hidden` attribute until Next button reveals them"
+      - "Final step's submit button POSTs to /api/handle_Client_Lead_Submission"
+      - "If otp_enabled=true, an <section class=\"otp\"> renders before submit and posts to /api/verificationsms"
+      - "Privacy disclaimer link beneath the final step"
+    cms_field_map:
+      submit_label: contentModel.heading
+      privacy_link: pages[id=4].url
+      otp_enabled:  manage_sites.otp_enabled    # typed bool — see form_engine above
+
+  - id: footer
+    description: Legal + brand footer (same as landing-page family)
+    must_have:
+      - Copyright line ("© <year> <client name>")
+      - Privacy + Terms links (CMS pages 4 + 5)
+      - Optional disclaimer line
+    cms_field_map:
+      copyright: derived from manage_clients.first_name + last_name
+      privacy_url: pages[id=4].url
+      terms_url: pages[id=5].url
+      disclaimer: manage_sites.redirect_to_article_page  # "Footer Disclaimer" in CMS UI
+
+# ────────────────────────────────────────────────────────────────────────────
+# Optional sections — Hayden/Jeremy can request these in the brief.
+# Skill A includes only the ones explicitly requested (or inferred from references).
+# ────────────────────────────────────────────────────────────────────────────
+optional_sections:
+  - id: progress_indicator
+    description: Step counter / progress bar above each fieldset ("Step 2 of 3")
+    cms_field_map: { enabled: derived from family options }
+  - id: trust_badges
+    description: Row of partner/award/security logos under the form
+    cms_field_map: { items: contentModel.col_one }   # legacy HTML bucket
+  - id: testimonials
+    description: 2-4 customer quotes shown beside or beneath the funnel
+    cms_field_map: { content: contentModel.section_second_paragraph }
+  - id: sticky_cta_mobile
+    description: Sticky bottom CTA bar on mobile that scrolls to the current step
+    cms_field_map: { enabled: derived from family options }
+
+# ────────────────────────────────────────────────────────────────────────────
+# SEO contract — mandatory <head> block. Identical to landing-page family.
+# ────────────────────────────────────────────────────────────────────────────
+seo:
+  required:
+    title:           contentModel.meta_title
+    meta_description: contentModel.meta_description
+    canonical:       derived from manage_clients.domain + pages[i].url
+    og_title:        contentModel.meta_title
+    og_description:  contentModel.meta_description
+    og_image:        contentModel.section_first_img    # hero image
+    og_type:         "website"
+    twitter_card:    "summary_large_image"
+    twitter_title:   contentModel.meta_title
+    twitter_description: contentModel.meta_description
+    twitter_image:   contentModel.section_first_img
+    jsonld:
+      "@context": "https://schema.org"
+      "@type":    "WebPage"
+      "name":     contentModel.meta_title
+      "description": contentModel.meta_description
+
+# ────────────────────────────────────────────────────────────────────────────
+# Image contract — identical to landing-page family.
+# ────────────────────────────────────────────────────────────────────────────
+image_contract:
+  required_attributes: [src, alt, width, height]
+  loading: "lazy"
+  lcp_image_override:
+    fetchpriority: "high"
+    loading: "eager"
+  forbidden:
+    - "alt='my-img'"
+    - "alt=''"
+    - "missing dimensions"
+  placeholder_during_generation:
+    src_pattern: "https://picsum.photos/seed/<slug>-<region>/<w>/<h>"
+    note: "Skill B's Register Agent uploads real images via cms_upload_image and rewrites these URLs"
+
+# ────────────────────────────────────────────────────────────────────────────
+# Color + typography — Option Y+ (CSS variables + bake-in fallback)
+# Identical to landing-page family — same allowlist, same defaults.
+# ────────────────────────────────────────────────────────────────────────────
+theming:
+  approach: "css-variables with baked-in :root fallback"
+  rationale: |
+    Local file:// preview shows correct colors (fallback applies).
+    Deployed via Skill B → CMS tokens.css overrides at runtime.
+    Hayden/Jeremy can tweak colors in CMS without regenerating HTML.
+  variables:
+    --color-primary:    "Skill A picks based on brief; CMS overrides"
+    --color-accent:     "Skill A picks; CMS overrides"
+    --color-text-body:  "#1F2937 default"
+    --color-bg-body:    "#FFFFFF default"
+    --font-heading:     "CMS subfooter_color (overloaded — stores font name)"
+    --font-body:        "Same as --font-heading by default"
+    --spacing-section:  "4rem default"
+  font_allowlist:
+    # Must match contracts/landing_page.yaml font_allowlist + existing CMS dropdown.
+    - Montserrat
+    - Roboto
+    - Helvetica
+    - Nunito
+    - "Open Sans"
+    - "Century Gothic"
+  default_font: Montserrat
+  bake_in_fallback: true
+
+# ────────────────────────────────────────────────────────────────────────────
+# Tech stack constraints — identical to landing-page family.
+# ────────────────────────────────────────────────────────────────────────────
+forbidden:
+  - 'jQuery (any version)'
+  - 'Bootstrap CSS or JS (any version) — Tailwind only'
+  - 'inline script blobs beyond ES module init'
+  - 'script tags injected into CMS-stored content'
+  - 'dangerouslySetInnerHTML patterns'
+  - '$(...) syntax'
+  - 'hardcoded host === "xyz.com" per-domain branches'
+  - 'external CDN script tags except Tailwind v4 CDN + a single analytics include'
+  - 'dead CDN URLs (e.g. stackpath.bootstrapcdn.com — shut down 2022)'
+  - 'branching DSL (`next_step_when`) — linear-only in v1'
+  - 'React/Vue/Svelte or any SPA framework — vanilla JS only for step progression'
+
+required_in_head:
+  - 'Tailwind v4 via CDN: <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>'
+  - '<meta charset="utf-8">'
+  - '<meta name="viewport" content="width=device-width, initial-scale=1">'
+  - '<html lang="en">'
+  - 'Full SEO block (see seo.required above)'
+  - '<style>:root { --color-primary: ...; ... }</style> bake-in fallback'
+
+# ────────────────────────────────────────────────────────────────────────────
+# Output files Skill A produces per design — same as landing-page family.
+# ────────────────────────────────────────────────────────────────────────────
+output:
+  files:
+    - "<slug>.html"           # full standalone, opens in browser correctly
+    - "page-meta.yaml"        # Scott-style frontmatter manifest
+    - "chat.md"               # human-readable summary of brief + decisions
+    - "assets/"               # any uploaded reference images
+  destination: "designs/<YYYY-MM-DD>-<slug>/ in microsite-design-skills Bitbucket repo"

@@ -1,9 +1,14 @@
-"""Landing Page family generator — calls Anthropic API to produce HTML + manifest
-matching the contracts/landing_page.yaml contract.
+"""Landing Page family — return-prompts pattern.
 
-Stub mode: when ANTHROPIC_API_KEY starts with 'sk-ant-DUMMY' or 'sk-ant-stub',
-returns a hand-crafted sample so the rest of the pipeline (repo push, audit, etc.)
-can be tested without burning API credits or needing a live key.
+This module no longer calls the Anthropic API. Instead, it assembles a
+"design brief" (instructions + contract + manifest JSON schema) that the
+caller's Claude (claude.ai web/mobile or Claude Code) uses to generate
+the HTML + manifest. The caller then POSTs the result back via the
+`submit_design` MCP tool, where it gets validated and committed.
+
+The `_render_html` + `_e` helpers are retained because they are useful for
+fallback / preview rendering and for verifying that a submitted manifest
+can be losslessly re-rendered when needed.
 """
 
 from __future__ import annotations
@@ -12,119 +17,106 @@ import logging
 import re
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
-from anthropic import Anthropic
 
-from ..config import DesignConfig
 from ..manifest import (
     FeatureCard,
-    FormConfig,
-    HeroSection,
     LandingPageManifest,
-    SeoBlock,
-    ThemeTokens,
 )
 
 log = logging.getLogger(__name__)
 
 CONTRACT_PATH = Path(__file__).resolve().parents[3] / "contracts" / "landing_page.yaml"
 
+
 # ---------------------------------------------------------------------------
-# Generation
+# Return-prompts pattern — build the brief the caller's Claude will act on
 # ---------------------------------------------------------------------------
 
-def generate(
-    cfg: DesignConfig,
+def _load_contract() -> dict[str, Any]:
+    return yaml.safe_load(CONTRACT_PATH.read_text())
+
+
+def _build_instructions(slug_hint: str, brief: str, references: Optional[list[str]]) -> str:
+    parts = [
+        "You are generating a Landing Page microsite for the Acquirely platform.",
+        "",
+        f"BRIEF:\n{brief}",
+        "",
+        f"SUGGESTED SLUG: {slug_hint}  (kebab-case; override if a better one fits the brief)",
+        "",
+    ]
+    if references:
+        parts.append("REFERENCE URLs / inspiration notes:")
+        parts.extend(f"- {r}" for r in references)
+        parts.append("")
+    parts.extend([
+        "STEP 1 — Read the `contract` field carefully. Every mandatory_section, SEO",
+        "requirement, image attribute and forbidden pattern in it is binding.",
+        "",
+        "STEP 2 — Read the `manifest_schema` field. Your manifest MUST validate",
+        "against that JSON schema (it is the Pydantic schema for LandingPageManifest).",
+        "",
+        "STEP 3 — Produce two artefacts:",
+        "  (a) a single self-contained HTML5 document — Tailwind v4 via CDN script,",
+        "      Option Y+ theming (CSS vars + :root fallback in <style>), exactly one",
+        "      <h1>, hero LCP image with fetchpriority=\"high\" loading=\"eager\",",
+        "      all other <img> loading=\"lazy\" + width + height + non-empty alt.",
+        "      Form posts to /api/handle_Client_Lead_Submission.",
+        "  (b) a manifest dict matching `manifest_schema`. Exactly 3 feature cards.",
+        "",
+        "STEP 4 — Call the `submit_design` MCP tool with:",
+        "    submit_design(",
+        "        design_id='<the design_id from this response>',",
+        "        html='<your full HTML>',",
+        "        manifest=<your manifest dict>,",
+        "    )",
+        "",
+        "The server will Pydantic-validate the manifest, sanity-check the HTML,",
+        "and commit to the microsite-design-skills repo. If validation fails you",
+        "will get a structured error back — fix and call submit_design again.",
+        "",
+        "If the user wants refinements after seeing a draft, call",
+        "`update_design(design_id, instructions=...)` to receive iteration",
+        "instructions, regenerate, then submit_design again.",
+    ])
+    return "\n".join(parts)
+
+
+def make_design_brief(
+    design_id: str,
     brief: str,
     references: Optional[list[str]] = None,
     requested_slug: Optional[str] = None,
-) -> tuple[str, LandingPageManifest, str]:
-    """Generate HTML + manifest for a landing page.
+) -> dict[str, Any]:
+    """Build the structured brief the caller's Claude will act on.
 
-    Returns: (html, manifest, chat_summary)
+    Returns a dict with: instructions, contract, manifest_schema, slug_hint.
+    The MCP tool layer adds design_id / status / expires_at on top.
     """
-    slug = requested_slug or _slugify(brief)
-
-    if _is_stub_mode(cfg):
-        log.info("using STUB mode (no real Anthropic call) — slug=%s", slug)
-        return _stub_output(slug, brief)
-
-    # Real Anthropic call
-    client = Anthropic(api_key=cfg.anthropic_api_key)
-    system_prompt = _build_system_prompt()
-
-    user_message = f"Brief: {brief}\n\nGenerate the HTML + manifest for slug '{slug}'."
-    if references:
-        user_message += f"\n\nReference URLs/notes:\n" + "\n".join(f"- {r}" for r in references)
-
-    msg = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=8192,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    response_text = msg.content[0].text
-
-    html, manifest_dict = _parse_response(response_text)
-    manifest = LandingPageManifest(**manifest_dict)
-    chat_summary = _build_chat_summary(brief, references, manifest)
-    return html, manifest, chat_summary
+    slug_hint = requested_slug or _slugify(brief)
+    contract = _load_contract()
+    manifest_schema = LandingPageManifest.model_json_schema()
+    instructions = _build_instructions(slug_hint, brief, references)
+    return {
+        "instructions": instructions,
+        "contract": contract,
+        "manifest_schema": manifest_schema,
+        "slug_hint": slug_hint,
+    }
 
 
 # ---------------------------------------------------------------------------
-# Stub mode (for testing without API key)
-# ---------------------------------------------------------------------------
-
-def _is_stub_mode(cfg: DesignConfig) -> bool:
-    return "DUMMY" in cfg.anthropic_api_key or "stub" in cfg.anthropic_api_key.lower()
-
-
-def _stub_output(slug: str, brief: str) -> tuple[str, LandingPageManifest, str]:
-    """Hand-crafted minimal valid output for testing the pipeline."""
-    manifest = LandingPageManifest(
-        slug=slug,
-        intent=brief[:200],
-        seo=SeoBlock(
-            title=f"{slug.replace('-', ' ').title()} — stub for testing",
-            meta_description=f"Stub landing page for {slug}. Replace with real Anthropic-generated content when API key is configured.",
-        ),
-        hero=HeroSection(
-            headline=f"Welcome to {slug.replace('-', ' ').title()}",
-            subheading="This is a stub-mode hero. Provide a real ANTHROPIC_API_KEY to generate real content.",
-            cta_label="Get Started",
-            image_url=f"https://picsum.photos/seed/{slug}-hero/1600/900",
-            image_alt=f"{slug} hero image placeholder",
-        ),
-        features=[
-            FeatureCard(
-                heading=f"Feature {i}",
-                paragraph=f"Stub paragraph for feature {i}. Real content comes from Anthropic.",
-                image_url=f"https://picsum.photos/seed/{slug}-f{i}/400/400",
-                image_alt=f"Feature {i} illustration",
-            )
-            for i in range(1, 4)
-        ],
-        form=FormConfig(submit_label="Get Started"),
-        theme=ThemeTokens(),
-    )
-    html = _render_html(manifest)
-    chat_summary = _build_chat_summary(brief, None, manifest, stub=True)
-    return html, manifest, chat_summary
-
-
-# ---------------------------------------------------------------------------
-# HTML renderer (used by stub mode AND as a fallback when LLM returns invalid HTML)
+# HTML renderer (retained for fallback / preview / future validation use)
 # ---------------------------------------------------------------------------
 
 def _render_html(m: LandingPageManifest) -> str:
-    """Produce a clean Tailwind v4 landing page from a manifest. Implements:
-    - Option Y+ theming (CSS vars + :root bake-in fallback)
-    - Mandatory regions: hero / features / form / footer
-    - Full SEO head block
-    - All <img> with alt + width + height + loading
-    - Single <h1>
+    """Produce a clean Tailwind v4 landing page from a manifest.
+
+    Used historically by stub mode; retained because it's a useful fallback
+    renderer if a submitted HTML ever needs regenerating from manifest alone.
     """
     canonical = str(m.seo.canonical_url) if m.seo.canonical_url else f"https://example.com/{m.slug}"
     og_image = m.seo.og_image_url or m.hero.image_url
@@ -237,103 +229,6 @@ def _e(s: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
-
-
-# ---------------------------------------------------------------------------
-# Real-LLM helpers (used when ANTHROPIC_API_KEY is real)
-# ---------------------------------------------------------------------------
-
-def _build_system_prompt() -> str:
-    contract = yaml.safe_load(CONTRACT_PATH.read_text())
-    return f"""You are a senior front-end engineer + designer producing landing pages for the Acquirely platform.
-
-OUTPUT FORMAT (strict — your message body must be EXACTLY two fenced blocks, nothing else):
-
-```html
-<!doctype html>
-<html lang="en">
-...full self-contained landing page...
-</html>
-```
-
-```yaml
-family: landing-page
-version: 1
-slug: <kebab-case>
-intent: <one-paragraph statement of who/what>
-seo:
-  title: ...
-  meta_description: ...
-hero:
-  headline: ...
-  subheading: ...
-  cta_label: ...
-  image_url: ...
-  image_alt: ...
-features:
-  - heading: ...
-    paragraph: ...
-    image_url: ...
-    image_alt: ...
-  - ... (exactly 3 cards)
-form:
-  submit_label: ...
-theme:
-  color_primary: <hex>
-  color_accent: <hex>
-optional_sections: []
-```
-
-CONTRACT (you MUST satisfy every rule):
-
-{yaml.dump(contract, sort_keys=False, default_flow_style=False)}
-
-CRITICAL:
-- Tailwind v4 via CDN script only — no other CSS framework
-- Single <h1> in hero, semantic <main>/<section>/<footer>, no <div> soup
-- Every <img> needs src + alt (non-empty for content imgs) + width + height
-- LCP image (hero) needs fetchpriority="high" loading="eager"
-- All other images loading="lazy"
-- Form posts to /api/handle_Client_Lead_Submission (the Acquirely backend handles routing)
-- Use CSS variables for colors/fonts (bake :root fallback into <style>)
-- Use Lorem Picsum URLs (https://picsum.photos/seed/<slug>-<region>/<w>/<h>) for placeholder images
-- NO jQuery, Bootstrap, dead CDNs, inline <script> blobs, dangerouslySetInnerHTML patterns
-"""
-
-
-def _parse_response(text: str) -> tuple[str, dict]:
-    """Pull the HTML and YAML blocks out of the LLM response."""
-    html_match = re.search(r"```html\s*\n(.*?)\n```", text, re.DOTALL)
-    yaml_match = re.search(r"```yaml\s*\n(.*?)\n```", text, re.DOTALL)
-    if not html_match or not yaml_match:
-        raise RuntimeError(f"LLM response did not contain both ```html and ```yaml blocks. Got:\n{text[:500]}...")
-    html = html_match.group(1).strip()
-    manifest_dict = yaml.safe_load(yaml_match.group(1))
-    return html, manifest_dict
-
-
-def _build_chat_summary(brief: str, references: Optional[list[str]], m: LandingPageManifest, stub: bool = False) -> str:
-    parts = [
-        f"# Design chat — {m.slug}",
-        "",
-        "## Brief",
-        brief,
-        "",
-    ]
-    if references:
-        parts.extend(["## References", *(f"- {r}" for r in references), ""])
-    if stub:
-        parts.append("> ⚠️ STUB mode — no real Anthropic call. Set a real ANTHROPIC_API_KEY in .env to generate live.\n")
-    parts.extend([
-        "## Output",
-        f"- family: {m.family}",
-        f"- slug: {m.slug}",
-        f"- intent: {m.intent}",
-        f"- features: {len(m.features)}",
-        f"- optional sections: {', '.join(m.optional_sections) or '(none)'}",
-        f"- theme: primary={m.theme.color_primary}, accent={m.theme.color_accent}",
-    ])
-    return "\n".join(parts) + "\n"
 
 
 def _slugify(text: str) -> str:

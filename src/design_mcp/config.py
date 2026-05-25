@@ -1,4 +1,9 @@
-"""Config — loads env vars."""
+"""Config — loads env vars.
+
+Return-prompts pattern: this server never calls an LLM itself, so there is
+no ANTHROPIC_API_KEY. The calling Claude does all generation; the server
+only validates + commits.
+"""
 
 from __future__ import annotations
 
@@ -12,9 +17,6 @@ load_dotenv()
 
 @dataclass(frozen=True)
 class DesignConfig:
-    # Anthropic
-    anthropic_api_key: str
-
     # HTTP server
     host: str
     port: int
@@ -37,7 +39,6 @@ class DesignConfig:
     @classmethod
     def from_env(cls) -> "DesignConfig":
         required = [
-            "ANTHROPIC_API_KEY",
             "TOKEN_DB_PASSWORD",
         ]
         missing = [k for k in required if not os.getenv(k)]
@@ -47,7 +48,6 @@ class DesignConfig:
                 f"Copy .env.example to .env and fill in values."
             )
         return cls(
-            anthropic_api_key=os.environ["ANTHROPIC_API_KEY"],
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8050")),
             public_url=os.getenv("PUBLIC_URL", "https://design-mcp.acquirely.com.au"),
