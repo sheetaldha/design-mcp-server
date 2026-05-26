@@ -24,6 +24,7 @@ import sys
 from typing import Any, Optional
 
 import yaml
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
@@ -32,8 +33,9 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from . import auth as auth_mod
 from . import drafts
-from .auth import AuthError, new_opaque_token
+from .auth import AuthError, hash_token, new_opaque_token
 from .config import DesignConfig, redact_url
+from .db import get_conn
 from .generators import landing_page as landing_gen
 from .generators import survey_funnel as survey_gen
 from .manifest import LandingPageManifest
@@ -299,17 +301,104 @@ def _manifest_class_for(family: str):
 
 
 # ---------------------------------------------------------------------------
+# Authenticated user resolution
+#
+# The MCP SDK's bearer-auth path stores the AccessToken in a contextvar via
+# `mcp.server.auth.middleware.auth_context`. The AccessToken model itself
+# doesn't carry user_email, so we look it up from the raw bearer token:
+#   1. design_mcp_oauth_access_tokens (OAuth grant path) — has user_email
+#   2. design_mcp_tokens              (legacy invite-token path) — has user_email
+# The lookup is cached for the lifetime of the request via the AccessToken
+# instance (a `__user_email` attribute) so we don't hit the DB on every tool.
+# ---------------------------------------------------------------------------
+
+class AuthContextError(RuntimeError):
+    """Raised when a tool handler can't resolve the authenticated user."""
+
+
+def _lookup_user_email_in_oauth_table(raw_token: str) -> Optional[str]:
+    """Return user_email if raw_token matches an OAuth access token row."""
+    h = hash_token(raw_token)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_email
+              FROM design_mcp_oauth_access_tokens
+             WHERE token_hash = %s AND revoked_at IS NULL
+            """,
+            (h,),
+        )
+        row = cur.fetchone()
+    return row["user_email"] if row else None
+
+
+def _lookup_user_email_in_invite_table(raw_token: str) -> Optional[str]:
+    """Return user_email if raw_token matches a design_mcp_tokens row (no usage bump)."""
+    h = hash_token(raw_token)
+    with get_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT user_email
+              FROM design_mcp_tokens
+             WHERE token_hash = %s AND revoked_at IS NULL
+            """,
+            (h,),
+        )
+        row = cur.fetchone()
+    return row["user_email"] if row else None
+
+
+def resolve_user_email() -> str:
+    """Resolve the authenticated user's email from the current request context.
+
+    Raises AuthContextError if no auth context is present or if the bearer
+    token cannot be mapped to a known user. Cached on the AccessToken
+    instance for the lifetime of a single request.
+    """
+    access_token = get_access_token()
+    if access_token is None:
+        raise AuthContextError(
+            "no authenticated user — tool requires a bearer token"
+        )
+
+    cached = getattr(access_token, "__user_email", None)
+    if cached:
+        return cached
+
+    raw = access_token.token
+    email = _lookup_user_email_in_oauth_table(raw) or _lookup_user_email_in_invite_table(raw)
+    if not email:
+        raise AuthContextError(
+            f"bearer token did not resolve to a known user "
+            f"(client_id={access_token.client_id!r})"
+        )
+    try:
+        object.__setattr__(access_token, "__user_email", email)
+    except (AttributeError, TypeError):
+        pass
+    return email
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
 def design_ping() -> dict:
-    """Health check — confirms the MCP server is up and config loads.
+    """Health check — confirms the MCP server is up, config loads, auth resolves.
 
     Returns:
-        {"mcp": "ok", "version": "...", "public_url": "...", ...}
+        {"mcp": "ok", "version": "...", "public_url": "...", "user_email": "..."}
     """
     from . import __version__
+
+    # Confirm the auth context is reachable. design_ping is a debug/health
+    # tool — return the resolved email so callers can sanity-check their
+    # token, but never fail the health check just because auth is absent.
+    try:
+        user_email: Optional[str] = resolve_user_email()
+    except AuthContextError:
+        user_email = None
 
     try:
         cfg = DesignConfig.from_env()
@@ -319,9 +408,10 @@ def design_ping() -> dict:
             "public_url": cfg.public_url,
             "mode": "return-prompts (no server-side LLM)",
             "design_repo": redact_url(cfg.design_repo_ssh),
+            "user_email": user_email,
         }
     except RuntimeError as e:
-        return {"mcp": "ok", "config_error": str(e)}
+        return {"mcp": "ok", "config_error": str(e), "user_email": user_email}
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +448,7 @@ def design_landing_page(
           "next_action": "Call submit_design(design_id, html, manifest) when ready.",
         }
     """
+    user_email = resolve_user_email()
     brief_payload = landing_gen.make_design_brief(
         design_id="pending",  # real id assigned by drafts.create below
         brief=brief,
@@ -365,6 +456,7 @@ def design_landing_page(
         requested_slug=slug,
     )
     record = drafts.create(
+        user_email=user_email,
         family="landing-page",
         brief=brief,
         slug_hint=brief_payload["slug_hint"],
@@ -393,12 +485,14 @@ def design_survey_funnel(
         Same shape as design_landing_page, but family="survey-funnel" and
         manifest_schema is the SurveyFunnelManifest JSON schema.
     """
+    user_email = resolve_user_email()
     brief_payload = survey_gen.make_design_brief(
         brief=brief,
         references=references,
         requested_slug=slug,
     )
     record = drafts.create(
+        user_email=user_email,
         family="survey-funnel",
         brief=brief,
         slug_hint=brief_payload["slug_hint"],
@@ -449,16 +543,17 @@ def submit_design(
     design_id: str,
     html: str,
     manifest: dict,
-    user_email: str = "sheetal@acquirely.com.au",
     publish: bool = True,
 ) -> dict:
     """Validate and (optionally) commit a generated design.
+
+    The git commit author is derived from the authenticated user — the
+    caller cannot spoof attribution.
 
     Args:
         design_id: the id returned by design_landing_page / design_survey_funnel
         html: the full HTML5 document produced by the caller's Claude
         manifest: the parsed manifest dict (matches manifest_schema for the family)
-        user_email: git attribution for the commit
         publish: when True (default) write + commit + push to microsite-design-skills
 
     Returns:
@@ -466,10 +561,17 @@ def submit_design(
                      committed: bool, design_dir?, commit_sha?, manifest}
         On failure: {ok: False, design_id, errors: [...], status}
     """
-    try:
-        record = drafts.get(design_id)
-    except KeyError as exc:
-        return {"ok": False, "design_id": design_id, "errors": [str(exc)], "status": "not-found"}
+    user_email = resolve_user_email()
+    record = drafts.get(design_id, user_email)
+    if record is None:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                f"design_id {design_id!r} not found or not owned by this user."
+            ],
+            "status": "not-found",
+        }
 
     if record.status in {"published", "cancelled", "expired"}:
         return {
@@ -496,7 +598,7 @@ def submit_design(
     errors.extend(_html_sanity_check(html))
 
     if errors:
-        drafts.update(design_id, last_error="; ".join(errors))
+        drafts.update(design_id, user_email, last_error="; ".join(errors))
         return {
             "ok": False,
             "design_id": design_id,
@@ -532,12 +634,14 @@ def submit_design(
         )
         drafts.update(
             design_id,
+            user_email,
             status="published",
             slug=slug,
             html=html,
             manifest=manifest_dict,
             chat_summary=chat_summary,
             commit_sha=sha,
+            published_repo_sha=sha,
             design_dir=str(design_dir),
             last_error=None,
         )
@@ -550,6 +654,7 @@ def submit_design(
     else:
         drafts.update(
             design_id,
+            user_email,
             status="submitted",
             slug=slug,
             html=html,
@@ -579,10 +684,16 @@ def update_design(design_id: str, instructions: str) -> dict:
         instructions: natural-language refinements (e.g. "use darker greens,
                       tighten the headline, drop the trust badges section")
     """
-    try:
-        record = drafts.get(design_id)
-    except KeyError as exc:
-        return {"ok": False, "design_id": design_id, "errors": [str(exc)]}
+    user_email = resolve_user_email()
+    record = drafts.get(design_id, user_email)
+    if record is None:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                f"design_id {design_id!r} not found or not owned by this user."
+            ],
+        }
 
     if record.status in {"published", "cancelled", "expired"}:
         return {
@@ -602,6 +713,7 @@ def update_design(design_id: str, instructions: str) -> dict:
 
     drafts.update(
         design_id,
+        user_email,
         status="drafted",  # iteration reopens the draft
         last_error=None,
     )
@@ -635,10 +747,16 @@ def update_design(design_id: str, instructions: str) -> dict:
 @mcp.tool()
 def get_design_status(design_id: str) -> dict:
     """Return the full DraftRecord for a design plus a human-readable summary."""
-    try:
-        record = drafts.get(design_id)
-    except KeyError as exc:
-        return {"ok": False, "design_id": design_id, "errors": [str(exc)]}
+    user_email = resolve_user_email()
+    record = drafts.get(design_id, user_email)
+    if record is None:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                f"design_id {design_id!r} not found or not owned by this user."
+            ],
+        }
 
     data = record.to_dict()
     summary_lines = [
@@ -669,10 +787,16 @@ def get_design_status(design_id: str) -> dict:
 @mcp.tool()
 def cancel_design(design_id: str, reason: Optional[str] = None) -> dict:
     """Mark a draft as cancelled. Record is retained for audit."""
-    try:
-        record = drafts.get(design_id)
-    except KeyError as exc:
-        return {"ok": False, "design_id": design_id, "errors": [str(exc)]}
+    user_email = resolve_user_email()
+    record = drafts.get(design_id, user_email)
+    if record is None:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                f"design_id {design_id!r} not found or not owned by this user."
+            ],
+        }
 
     if record.status == "published":
         return {
@@ -684,7 +808,7 @@ def cancel_design(design_id: str, reason: Optional[str] = None) -> dict:
     if record.status == "cancelled":
         return {"ok": True, "design_id": design_id, "status": "cancelled", "note": "already cancelled"}
 
-    drafts.update(design_id, status="cancelled", last_error=reason)
+    drafts.update(design_id, user_email, status="cancelled", last_error=reason)
     return {
         "ok": True,
         "design_id": design_id,
