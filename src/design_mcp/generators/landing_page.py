@@ -25,6 +25,7 @@ from ..manifest import (
     FeatureCard,
     LandingPageManifest,
 )
+from ._brief_template import render_brief
 
 log = logging.getLogger(__name__)
 
@@ -39,50 +40,37 @@ def _load_contract() -> dict[str, Any]:
     return yaml.safe_load(CONTRACT_PATH.read_text())
 
 
-def _build_instructions(slug_hint: str, brief: str, references: Optional[list[str]]) -> str:
-    parts = [
-        "You are generating a Landing Page microsite for the Acquirely platform.",
-        "",
-        f"BRIEF:\n{brief}",
-        "",
-        f"SUGGESTED SLUG: {slug_hint}  (kebab-case; override if a better one fits the brief)",
-        "",
-    ]
-    if references:
-        parts.append("REFERENCE URLs / inspiration notes:")
-        parts.extend(f"- {r}" for r in references)
-        parts.append("")
-    parts.extend([
-        "STEP 1 — Read the `contract` field carefully. Every mandatory_section, SEO",
-        "requirement, image attribute and forbidden pattern in it is binding.",
-        "",
-        "STEP 2 — Read the `manifest_schema` field. Your manifest MUST validate",
-        "against that JSON schema (it is the Pydantic schema for LandingPageManifest).",
-        "",
-        "STEP 3 — Produce two artefacts:",
-        "  (a) a single self-contained HTML5 document — Tailwind v4 via CDN script,",
-        "      Option Y+ theming (CSS vars + :root fallback in <style>), exactly one",
-        "      <h1>, hero LCP image with fetchpriority=\"high\" loading=\"eager\",",
-        "      all other <img> loading=\"lazy\" + width + height + non-empty alt.",
-        "      Form posts to /api/handle_Client_Lead_Submission.",
-        "  (b) a manifest dict matching `manifest_schema`. Exactly 3 feature cards.",
-        "",
-        "STEP 4 — Call the `submit_design` MCP tool with:",
-        "    submit_design(",
-        "        design_id='<the design_id from this response>',",
-        "        html='<your full HTML>',",
-        "        manifest=<your manifest dict>,",
-        "    )",
-        "",
-        "The server will Pydantic-validate the manifest, sanity-check the HTML,",
-        "and commit to the microsite-design-skills repo. If validation fails you",
-        "will get a structured error back — fix and call submit_design again.",
-        "",
-        "If the user wants refinements after seeing a draft, call",
-        "`update_design(design_id, instructions=...)` to receive iteration",
-        "instructions, regenerate, then submit_design again.",
-    ])
-    return "\n".join(parts)
+_CLARIFYING_QUESTIONS = [
+    "Who is this page for? (persona — age, situation, the pain point you're solving)",
+    "What single action should a visitor take? (book a call, request a quote, sign up, download)",
+    "Brand colours, fonts, or existing pages to match? Say \"you pick\" and I'll choose and call it out.",
+    "Top 2 or 3 benefits or proof points to feature? (numbers, badges, testimonials, awards)",
+    "Tone — friendly + casual, professional + clinical, playful, or authoritative?",
+    "Anything to avoid? (competitor styles, compliance-forbidden words, imagery to steer clear of)",
+]
+
+_CONTRACT_NOTES = (
+    "Landing Page contract: self-contained HTML5 with Tailwind v4 via the CDN script, Option Y+ theming "
+    "(CSS variables in :root plus /tokens.css), exactly one <h1> in the hero, exactly three feature cards "
+    "in the manifest, hero LCP image with fetchpriority=\"high\" loading=\"eager\", every other <img> with "
+    "loading=\"lazy\" plus width, height and non-empty alt. Lead form posts to /api/handle_Client_Lead_Submission. "
+    "Font from the contract's font_allowlist."
+)
+
+
+def _build_instructions(
+    slug_hint: str,
+    brief: str,
+    references: Optional[list[str]],
+) -> str:
+    return render_brief(
+        family_label="Landing Page",
+        brief=brief,
+        slug_hint=slug_hint,
+        references=references,
+        clarifying_questions=_CLARIFYING_QUESTIONS,
+        family_contract_notes=_CONTRACT_NOTES,
+    )
 
 
 def make_design_brief(
@@ -99,6 +87,10 @@ def make_design_brief(
     slug_hint = requested_slug or _slugify(brief)
     contract = _load_contract()
     manifest_schema = LandingPageManifest.model_json_schema()
+    # `design_id` is accepted to keep the function signature stable, but the
+    # rendered instructions refer to it symbolically (the caller sees the real
+    # id as a sibling field on the MCP response).
+    _ = design_id
     instructions = _build_instructions(slug_hint, brief, references)
     return {
         "instructions": instructions,
