@@ -37,7 +37,7 @@ design-mcp            # starts stdio MCP locally
 
 See `STATUS.md` (local-only) for the deploy walkthrough.
 
-Roughly: PM2 process on port 8050, nginx vhost at `design-mcp.acquirely.com.au` proxies to it, LetsEncrypt cert via certbot.
+Roughly: PM2 process on port 8050, nginx vhost at `design-mcp.leadloom.com.au` proxies to it, LetsEncrypt cert via certbot.
 
 ## Status
 

@@ -24,7 +24,9 @@ import sys
 from typing import Any, Optional
 
 import yaml
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import drafts
 from .config import DesignConfig
@@ -32,6 +34,7 @@ from .generators import landing_page as landing_gen
 from .generators import survey_funnel as survey_gen
 from .manifest import LandingPageManifest
 from .repo import publish_design
+from .token_verifier import DESIGN_WRITE_SCOPE, BearerTokenVerifier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -43,10 +46,39 @@ log = logging.getLogger(__name__)
 # Honor HOST/PORT from env for production HTTP transport.
 # FastMCP's internal Uvicorn server reads these from constructor kwargs.
 import os as _os
+
+# DNS-rebinding protection is auto-enabled when host=127.0.0.1, which rejects
+# our public Host header coming through nginx. Override with an explicit
+# allow-list of the public hostname + loopback. PUBLIC_HOSTNAMES is a
+# comma-separated list of bare hostnames (no scheme).
+_public_hostnames = [
+    h.strip() for h in _os.getenv("PUBLIC_HOSTNAMES", "design-mcp.leadloom.com.au").split(",") if h.strip()
+]
+_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=[*_public_hostnames, "127.0.0.1:*", "localhost:*", "[::1]:*"],
+    allowed_origins=[
+        *(f"https://{h}" for h in _public_hostnames),
+        "https://claude.ai",
+        "http://127.0.0.1:*",
+        "http://localhost:*",
+    ],
+)
+
+_public_url = _os.getenv("PUBLIC_URL", "https://design-mcp.leadloom.com.au")
+_auth_settings = AuthSettings(
+    issuer_url=_public_url,  # type: ignore[arg-type]
+    resource_server_url=_public_url,  # type: ignore[arg-type]
+    required_scopes=[DESIGN_WRITE_SCOPE],
+)
+
 mcp = FastMCP(
     "design-mcp-server",
     host=_os.getenv("HOST", "127.0.0.1"),
     port=int(_os.getenv("PORT", "8050")),
+    transport_security=_security,
+    auth=_auth_settings,
+    token_verifier=BearerTokenVerifier(),
 )
 
 

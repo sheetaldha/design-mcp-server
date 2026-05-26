@@ -50,7 +50,7 @@ class DesignConfig:
         return cls(
             host=os.getenv("HOST", "0.0.0.0"),
             port=int(os.getenv("PORT", "8050")),
-            public_url=os.getenv("PUBLIC_URL", "https://design-mcp.acquirely.com.au"),
+            public_url=os.getenv("PUBLIC_URL", "https://design-mcp.leadloom.com.au"),
             token_db_host=os.getenv("TOKEN_DB_HOST", "170.64.179.248"),
             token_db_port=int(os.getenv("TOKEN_DB_PORT", "5432")),
             token_db_name=os.getenv("TOKEN_DB_NAME", "acquirely_rel"),
