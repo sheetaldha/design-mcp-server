@@ -33,7 +33,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 from . import auth as auth_mod
 from . import drafts
 from .auth import AuthError, new_opaque_token
-from .config import DesignConfig
+from .config import DesignConfig, redact_url
 from .generators import landing_page as landing_gen
 from .generators import survey_funnel as survey_gen
 from .manifest import LandingPageManifest
@@ -224,7 +224,7 @@ def design_ping() -> dict:
             "version": __version__,
             "public_url": cfg.public_url,
             "mode": "return-prompts (no server-side LLM)",
-            "design_repo": cfg.design_repo_ssh,
+            "design_repo": redact_url(cfg.design_repo_ssh),
         }
     except RuntimeError as e:
         return {"mcp": "ok", "config_error": str(e)}

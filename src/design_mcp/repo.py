@@ -12,9 +12,14 @@ from datetime import date
 from pathlib import Path
 from typing import Optional
 
-from .config import DesignConfig
+from .config import DesignConfig, redact_url
 
 log = logging.getLogger(__name__)
+
+
+def _redact_cmd(cmd: list[str]) -> str:
+    """Render a command list for logs/errors with any embedded URL credentials stripped."""
+    return " ".join(redact_url(a) for a in cmd)
 
 
 class GitError(Exception):
@@ -23,11 +28,11 @@ class GitError(Exception):
 
 def _run(cmd: list[str], cwd: Optional[Path] = None) -> str:
     """Run a git command, raise GitError on failure."""
-    log.debug("git: %s (cwd=%s)", " ".join(cmd), cwd)
+    log.debug("git: %s (cwd=%s)", _redact_cmd(cmd), cwd)
     result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if result.returncode != 0:
         raise GitError(
-            f"{' '.join(cmd)} failed (exit {result.returncode}):\n"
+            f"{_redact_cmd(cmd)} failed (exit {result.returncode}):\n"
             f"  stdout: {result.stdout.strip()}\n"
             f"  stderr: {result.stderr.strip()}"
         )
@@ -38,7 +43,7 @@ def ensure_repo(cfg: DesignConfig) -> Path:
     """Clone the design repo if missing, otherwise pull latest. Returns local path."""
     local = Path(cfg.design_repo_local_clone)
     if not (local / ".git").exists():
-        log.info("cloning %s -> %s", cfg.design_repo_ssh, local)
+        log.info("cloning %s -> %s", redact_url(cfg.design_repo_ssh), local)
         local.parent.mkdir(parents=True, exist_ok=True)
         _run(["git", "clone", cfg.design_repo_ssh, str(local)])
     else:

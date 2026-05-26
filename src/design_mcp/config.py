@@ -9,10 +9,27 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def redact_url(url: str) -> str:
+    """Strip userinfo (user:password) from an HTTP/S URL.
+
+    Returns the URL unchanged if it has no userinfo or isn't parseable as HTTP.
+    SSH-style URLs (git@host:path) are returned as-is.
+    """
+    try:
+        parts = urlsplit(url)
+        if parts.scheme not in ("http", "https") or "@" not in (parts.netloc or ""):
+            return url
+        host = parts.netloc.split("@", 1)[1]
+        return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return url
 
 
 @dataclass(frozen=True)
