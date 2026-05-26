@@ -38,6 +38,20 @@ def _hash(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
+def hash_token(raw_token: str) -> str:
+    """Public alias of the SHA-256 hashing used for every opaque secret
+    stored in this server (invite tokens, OAuth client secrets, OAuth
+    authorization codes, OAuth access/refresh tokens)."""
+    return _hash(raw_token)
+
+
+def new_opaque_token() -> str:
+    """Mint a 32-byte (64-hex-char) cryptographically random opaque token.
+    Used for invite tokens, OAuth client secrets, authorization codes,
+    access tokens and refresh tokens — same shape everywhere."""
+    return secrets.token_hex(32)
+
+
 def issue_token(user_email: str, note: Optional[str] = None) -> tuple[str, TokenInfo]:
     """Create a new token. Returns (raw_token, TokenInfo).
 

@@ -24,17 +24,27 @@ import sys
 from typing import Any, Optional
 
 import yaml
-from mcp.server.auth.settings import AuthSettings
+from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from . import auth as auth_mod
 from . import drafts
+from .auth import AuthError, new_opaque_token
 from .config import DesignConfig
 from .generators import landing_page as landing_gen
 from .generators import survey_funnel as survey_gen
 from .manifest import LandingPageManifest
+from . import oauth_provider as _op
+from .oauth_provider import (
+    OAuthProvider,
+    render_login_form,
+    verify_oauth_state,
+)
 from .repo import publish_design
-from .token_verifier import DESIGN_WRITE_SCOPE, BearerTokenVerifier
+from .token_verifier import DESIGN_WRITE_SCOPE
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,6 +80,16 @@ _auth_settings = AuthSettings(
     issuer_url=_public_url,  # type: ignore[arg-type]
     resource_server_url=_public_url,  # type: ignore[arg-type]
     required_scopes=[DESIGN_WRITE_SCOPE],
+    client_registration_options=ClientRegistrationOptions(
+        enabled=True,
+        valid_scopes=[DESIGN_WRITE_SCOPE],
+        default_scopes=[DESIGN_WRITE_SCOPE],
+    ),
+    revocation_options=RevocationOptions(enabled=True),
+)
+
+_oauth_provider = OAuthProvider(
+    public_url=_public_url, default_scopes=[DESIGN_WRITE_SCOPE],
 )
 
 mcp = FastMCP(
@@ -78,8 +98,89 @@ mcp = FastMCP(
     port=int(_os.getenv("PORT", "8050")),
     transport_security=_security,
     auth=_auth_settings,
-    token_verifier=BearerTokenVerifier(),
+    auth_server_provider=_oauth_provider,
 )
+
+
+# ---------------------------------------------------------------------------
+# /authorize/login — HTML form that converts an invite token into an OAuth
+# authorization code. Mounted via custom_route so it bypasses bearer auth.
+# ---------------------------------------------------------------------------
+
+@mcp.custom_route("/authorize/login", methods=["GET", "POST"])
+async def authorize_login(request: Request) -> Response:
+    if request.method == "GET":
+        blob = request.query_params.get("oauth_state", "")
+        try:
+            payload = verify_oauth_state(blob)
+        except ValueError:
+            return HTMLResponse(
+                "<h1>Invalid authorization request</h1>"
+                "<p>The OAuth state could not be verified. Restart the flow from your client.</p>",
+                status_code=400,
+            )
+        client = await _oauth_provider.get_client(payload["client_id"])
+        client_name = client.client_name if client else payload["client_id"]
+        return HTMLResponse(
+            render_login_form(
+                client_name=client_name or "an OAuth client",
+                scopes=payload.get("scopes") or [DESIGN_WRITE_SCOPE],
+                oauth_state=blob,
+            )
+        )
+
+    # POST — validate invite token, mint auth code, redirect back to client.
+    form = await request.form()
+    blob = str(form.get("oauth_state") or "")
+    invite_token = str(form.get("invite_token") or "")
+    try:
+        payload = verify_oauth_state(blob)
+    except ValueError:
+        return HTMLResponse(
+            "<h1>Invalid authorization request</h1>", status_code=400,
+        )
+
+    client = await _oauth_provider.get_client(payload["client_id"])
+    client_name = client.client_name if client else payload["client_id"]
+
+    import asyncio as _asyncio
+    try:
+        info = await _asyncio.to_thread(auth_mod.validate_token, invite_token)
+    except AuthError as exc:
+        log.warning("authorize_login: invite-token rejected: %s", exc)
+        return HTMLResponse(
+            render_login_form(
+                client_name=client_name or "an OAuth client",
+                scopes=payload.get("scopes") or [DESIGN_WRITE_SCOPE],
+                oauth_state=blob,
+                error="Invite token is invalid, revoked, or malformed.",
+            ),
+            status_code=401,
+        )
+
+    raw_code = new_opaque_token()
+    await _asyncio.to_thread(
+        _op._store_auth_code,
+        raw_code=raw_code,
+        client_id=payload["client_id"],
+        user_email=info.user_email,
+        redirect_uri=payload["redirect_uri"],
+        redirect_uri_explicit=payload.get("redirect_uri_explicit", True),
+        code_challenge=payload["code_challenge"],
+        code_challenge_method=payload.get("code_challenge_method", "S256"),
+        scopes=payload.get("scopes") or [DESIGN_WRITE_SCOPE],
+    )
+
+    from urllib.parse import urlencode
+    qp: dict[str, str] = {"code": raw_code}
+    if payload.get("state"):
+        qp["state"] = payload["state"]
+    sep = "&" if "?" in payload["redirect_uri"] else "?"
+    return RedirectResponse(
+        url=f"{payload['redirect_uri']}{sep}{urlencode(qp)}",
+        status_code=302,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 # ---------------------------------------------------------------------------

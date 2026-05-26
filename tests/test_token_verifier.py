@@ -181,6 +181,10 @@ class TestServerAuthWiring:
             raise AuthError("unknown token")
 
         monkeypatch.setattr(auth_mod, "validate_token", boom)
+        # The OAuthProvider.load_access_token first checks the oauth tokens
+        # table; stub it out so no DB connection is needed in CI.
+        from design_mcp import oauth_provider as _op
+        monkeypatch.setattr(_op, "_load_access_token_row", lambda _t: None)
         from design_mcp import server as server_mod
 
         app = server_mod.mcp.streamable_http_app()
