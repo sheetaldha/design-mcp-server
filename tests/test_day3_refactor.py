@@ -396,6 +396,92 @@ class TestDesignLandingPage:
 
 
 # ---------------------------------------------------------------------------
+# Instructions UX — both families should drive an iterative, question-driven
+# intake rather than producing HTML straight from a one-line brief.
+# ---------------------------------------------------------------------------
+
+# Phrases every family's instructions must surface so the caller's chat
+# walks the user through ask -> outline -> generate -> preview -> iterate -> submit.
+_SHARED_REQUIRED_PHRASES = [
+    "ask the user",
+    "outline",
+    "wait for",
+    "submit_design",
+    "update_design",
+    "cancel_design",
+    "<title>",
+    "70 char",
+    "Ready to submit, iterate, or scrap",
+    "show me the html",
+    "Acknowledge",
+]
+
+
+def _instructions_for(family: str, brief: str) -> str:
+    if family == "landing-page":
+        from design_mcp.server import design_landing_page as _entry
+    elif family == "survey-funnel":
+        from design_mcp.server import design_survey_funnel as _entry
+    else:  # pragma: no cover - sanity guard
+        raise ValueError(family)
+    return _entry(brief=brief)["instructions"]
+
+
+class TestInstructionsUX:
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_mention_all_flow_anchors(self, family):
+        text = _instructions_for(family, "HealthBoost — over-50s health insurance, blue palette")
+        lower = text.lower()
+        for phrase in _SHARED_REQUIRED_PHRASES:
+            assert phrase.lower() in lower, (
+                f"[{family}] instructions missing required phrase: {phrase!r}"
+            )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_echo_the_user_brief_verbatim(self, family):
+        brief = "HealthBoost — over-50s health insurance, blue palette"
+        text = _instructions_for(family, brief)
+        assert brief in text, f"[{family}] instructions should echo the user's brief"
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_block_html_before_outline_approval(self, family):
+        text = _instructions_for(family, "anything")
+        # Must explicitly defer HTML until the outline is approved.
+        assert "No HTML yet" in text or "no HTML" in text.lower()
+        # The "do not skip ahead" / outline-first language must be present.
+        assert "before any HTML" in text or "approved a written outline" in text
+
+    def test_landing_page_instructions_carry_family_specific_rules(self):
+        text = _instructions_for("landing-page", "anything")
+        assert "Landing Page" in text
+        assert "feature cards" in text  # exactly 3 feature cards
+        assert "/api/handle_Client_Lead_Submission" in text
+
+    def test_survey_funnel_instructions_carry_family_specific_rules(self):
+        text = _instructions_for("survey-funnel", "anything")
+        assert "Survey Funnel" in text
+        assert "OTP" in text
+        assert "1 to 5" in text or "1..5" in text
+        assert "/api/verificationsms" in text
+        assert "/api/handle_Client_Lead_Submission" in text
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_contain_actual_clarifying_questions(self, family):
+        # Not just "ask clarifying questions" — the actual phrasing.
+        text = _instructions_for(family, "anything")
+        assert "?" in text
+        # At least 4 question marks in the clarifying-question block.
+        assert text.count("?") >= 4
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_under_word_budget(self, family):
+        text = _instructions_for(family, "anything")
+        # Soft budget per the spec — ~600 words per family. Allow a little slack.
+        word_count = len(text.split())
+        assert word_count <= 750, f"[{family}] instructions are {word_count} words; budget ~600"
+
+
+# ---------------------------------------------------------------------------
 # submit_design
 # ---------------------------------------------------------------------------
 

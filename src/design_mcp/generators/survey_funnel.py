@@ -40,6 +40,7 @@ from ..manifest import (
     SurveyFunnelManifest,
     ThemeTokens,
 )
+from ._brief_template import render_brief
 
 log = logging.getLogger(__name__)
 
@@ -65,96 +66,47 @@ def make_design_brief(
     """
     slug_hint = requested_slug or _slugify(brief)
     contract = yaml.safe_load(CONTRACT_PATH.read_text())
-    ref_block = ""
-    if references:
-        ref_block = "\n\nREFERENCE URLs / inspiration notes:\n" + "\n".join(f"- {r}" for r in references)
     return {
-        "instructions": _build_instructions() + ref_block,
+        "instructions": _build_instructions(brief, slug_hint, references),
         "contract": contract,
         "manifest_schema": SurveyFunnelManifest.model_json_schema(),
         "slug_hint": slug_hint,
     }
 
 
-def _build_instructions() -> str:
-    """Plain-English generation guidelines. Reads as a system prompt for Claude."""
-    return """You are a senior front-end engineer + designer producing **Survey Funnel** microsites for the Acquirely platform.
+_CLARIFYING_QUESTIONS = [
+    "Who is the funnel qualifying? (persona — age, situation, the decision they're about to make)",
+    "How many steps (1 to 5) and roughly what does each ask? If unsure I'll suggest 3: situation, timeframe, contact details.",
+    "OTP / SMS verification step before submit — yes or skip?",
+    "What should the final submit button say? (e.g. \"Get My Quotes\", \"See My Match\", \"Apply Now\")",
+    "What happens after submit — thank-you on the same page, redirect, or both?",
+    "Brand colours, tone (friendly / professional / playful / authoritative), and any styles to avoid?",
+]
 
-A Survey Funnel is a multi-step lead-capture form. The user lands on the hero, clicks the CTA, then steps through 1..5 fieldsets answering qualifying questions, optionally completes an OTP verification step, then submits. Use cases: insurance / energy / solar quote comparison.
+_CONTRACT_NOTES = (
+    "Survey Funnel contract: self-contained HTML5, Tailwind v4 CDN, Option Y+ theming (CSS vars + /tokens.css). "
+    "One <h1> in the hero; step headings are <h2> or <legend>. 1 to 5 <fieldset data-step=\"...\"> blocks (default 3); "
+    "first visible, rest hidden, with a small inline <script type=\"module\"> toggling them on Next / Back. Linear "
+    "progression only — no next_step_when branching. If otp_enabled is true, render <section class=\"otp\" hidden> "
+    "between the final fieldset and submit, with a Send code button posting to /api/verificationsms. Final submit "
+    "posts to /api/handle_Client_Lead_Submission. Every <img>: src, alt, width, height; hero gets fetchpriority=\"high\" "
+    "loading=\"eager\", others loading=\"lazy\". radio/select/checkbox need an options list (min 2); text/email/tel forbid options."
+)
 
-OUTPUT FORMAT (strict — your message body must be EXACTLY two fenced blocks, nothing else):
 
-```html
-<!doctype html>
-<html lang="en">
-...full self-contained survey funnel page...
-</html>
-```
-
-```yaml
-family: survey-funnel
-version: 1
-slug: <kebab-case>
-intent: <one-paragraph who/what this funnel qualifies>
-seo:
-  title: ...
-  meta_description: ...
-hero:
-  headline: ...
-  subheading: ...
-  cta_label: ...
-  image_url: https://picsum.photos/seed/<slug>-hero/1600/900
-  image_alt: ...
-steps:
-  - id: step-1
-    heading: ...
-    questions:
-      - { name: <snake_case>, type: <text|email|tel|radio|select|checkbox>, label: ..., required: true }
-  - id: step-2
-    heading: ...
-    questions: [ ... ]
-  # 1..5 steps total — default 3
-otp_enabled: false   # set true only if the brief explicitly asks for OTP / SMS verification
-submit_label: ...
-optional_sections: []   # any of: progress_indicator, trust_badges, testimonials, sticky_cta_mobile
-theme:
-  color_primary: <hex>
-  color_accent: <hex>
-```
-
-GENERATION RULES — you MUST satisfy every one of these (the contract YAML below also enforces them):
-
-1. **Steps**: 1..5 fieldsets. Default to 3 steps unless the brief says otherwise. Each step is a `<fieldset>` containing the step heading (<legend> or <h2>) and the questions. The first step is visible on page load; later steps carry the HTML `hidden` attribute until the user clicks "Next".
-
-2. **Linear progression only** — no branching. Step 1 → 2 → 3 → (OTP if enabled) → submit. Do NOT emit `next_step_when` rules or conditional skipping logic in v1.
-
-3. **Step transitions**: emit a minimal inline `<script type="module">` block that toggles `hidden` on fieldsets when Next/Back buttons are clicked. No jQuery, no framework, no external state library. Plain DOM `addEventListener`. Validate the current fieldset (HTML5 `checkValidity()`) before advancing.
-
-4. **OTP step**: if `otp_enabled: true` in the manifest, emit a `<section class="otp" hidden>` between the final fieldset and the final submit. The OTP section has a "Send code" button that POSTs the phone number to `/api/verificationsms`, then a 6-digit code input, then a "Verify" button. Do NOT emit the OTP section when `otp_enabled: false`. OTP is NEVER a step in the `steps` array — it is rendered conditionally from the top-level flag.
-
-5. **Final submit**: the final step's submit button POSTs the assembled form (all step inputs) to `/api/handle_Client_Lead_Submission` (the Acquirely backend handles integration routing — Databowl / HubSpot / Slack / Webhook are CMS toggles, not page-level config).
-
-6. **One <h1>**: in the hero. Step headings are `<h2>` (or `<legend>` — your choice; both are acceptable semantic markup).
-
-7. **Images**: every `<img>` needs `src`, non-empty `alt`, `width`, `height`. The hero LCP image gets `fetchpriority="high" loading="eager"`. All other images get `loading="lazy"`. Placeholder URLs use `https://picsum.photos/seed/<slug>-<region>/<w>/<h>` (Skill B's Register Agent uploads real images later).
-
-8. **Theming (Option Y+)**: emit a `<style>:root { --color-primary: ...; --color-accent: ...; --font-heading: ...; --font-body: ...; --spacing-section: 4rem; }</style>` bake-in block. Reference variables via Tailwind arbitrary values like `bg-[var(--color-primary)]`. Also `<link rel="stylesheet" href="/tokens.css">` so CMS tokens override at deploy time. Pick fonts ONLY from the contract's `theming.font_allowlist`.
-
-9. **Required <head> contents**: charset, viewport, full SEO block (title / meta_description / canonical / og:* / twitter:* / JSON-LD WebPage), the bake-in `:root` <style>, the `/tokens.css` link, and the Tailwind v4 CDN script `https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4`. NO other CSS framework, NO jQuery, NO Bootstrap, NO dead CDNs.
-
-10. **Footer**: copyright line, privacy + terms links. Same shape as landing-page family.
-
-11. **Question types**:
-    - `text`, `email`, `tel` render as `<input>` of that type.
-    - `radio` renders as a set of `<label><input type="radio" name="..." value="...">…</label>` (one per option).
-    - `select` renders as `<select>` with `<option>` per option.
-    - `checkbox` renders as one or many `<input type="checkbox">` per option (multi-select).
-    For radio/select/checkbox the `options` list is required (min 2). For text/email/tel no `options` allowed.
-
-12. **Optional sections**: include `progress_indicator` (a "Step N of M" counter or a CSS bar above each fieldset), `trust_badges`, `testimonials`, or `sticky_cta_mobile` ONLY when the brief asks for them or the manifest's `optional_sections` lists them.
-
-Below this you will see the full contract (forbidden patterns, image rules, etc.) and the JSON schema for the manifest. The HTML you emit must validate against the contract; the YAML you emit must validate against the schema.
-"""
+def _build_instructions(
+    brief: str,
+    slug_hint: str,
+    references: Optional[list[str]],
+) -> str:
+    return render_brief(
+        family_label="Survey Funnel",
+        brief=brief,
+        slug_hint=slug_hint,
+        references=references,
+        clarifying_questions=_CLARIFYING_QUESTIONS,
+        family_contract_notes=_CONTRACT_NOTES,
+    )
 
 
 # ---------------------------------------------------------------------------
