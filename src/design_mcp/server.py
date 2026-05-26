@@ -40,6 +40,8 @@ from .manifest import LandingPageManifest
 from . import oauth_provider as _op
 from .oauth_provider import (
     OAuthProvider,
+    consume_csrf_token,
+    issue_csrf_token,
     render_login_form,
     verify_oauth_state,
 )
@@ -107,37 +109,125 @@ mcp = FastMCP(
 # authorization code. Mounted via custom_route so it bypasses bearer auth.
 # ---------------------------------------------------------------------------
 
+_NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Pragma": "no-cache",
+}
+
+
+def _no_cache_html(body: str, status_code: int = 200) -> HTMLResponse:
+    """HTMLResponse with M4 cache-suppression headers always applied."""
+    return HTMLResponse(body, status_code=status_code, headers=dict(_NO_CACHE_HEADERS))
+
+
+def _origin_referer_ok(request: Request) -> bool:
+    """Reject cross-site POSTs: Origin must equal our public_url; Referer,
+    if present, must share the same scheme+host+port. Absent Referer is
+    allowed (some browsers / Privacy Badger strip it on same-origin POSTs).
+    """
+    expected = _public_url.rstrip("/")
+    origin = request.headers.get("origin")
+    if origin is None or origin.rstrip("/") != expected:
+        return False
+    referer = request.headers.get("referer")
+    if referer:
+        from urllib.parse import urlsplit
+        try:
+            r = urlsplit(referer)
+            e = urlsplit(expected)
+        except ValueError:
+            return False
+        if (r.scheme, r.hostname, r.port) != (e.scheme, e.hostname, e.port):
+            return False
+    return True
+
+
+def _client_cancel_redirect(payload: dict) -> RedirectResponse:
+    """RFC 6749 §4.1.2.1 — user denied. Return access_denied to the client."""
+    from urllib.parse import urlencode
+    qp: dict[str, str] = {"error": "access_denied"}
+    if payload.get("state"):
+        qp["state"] = payload["state"]
+    target = payload["redirect_uri"]
+    sep = "&" if "?" in target else "?"
+    return RedirectResponse(
+        url=f"{target}{sep}{urlencode(qp)}",
+        status_code=302,
+        headers=dict(_NO_CACHE_HEADERS),
+    )
+
+
 @mcp.custom_route("/authorize/login", methods=["GET", "POST"])
 async def authorize_login(request: Request) -> Response:
+    # ----- GET — render the consent screen --------------------------------
     if request.method == "GET":
         blob = request.query_params.get("oauth_state", "")
         try:
             payload = verify_oauth_state(blob)
         except ValueError:
-            return HTMLResponse(
+            return _no_cache_html(
                 "<h1>Invalid authorization request</h1>"
                 "<p>The OAuth state could not be verified. Restart the flow from your client.</p>",
                 status_code=400,
             )
         client = await _oauth_provider.get_client(payload["client_id"])
         client_name = client.client_name if client else payload["client_id"]
-        return HTMLResponse(
+        csrf = await issue_csrf_token(blob)
+        return _no_cache_html(
             render_login_form(
                 client_name=client_name or "an OAuth client",
                 scopes=payload.get("scopes") or [DESIGN_WRITE_SCOPE],
                 oauth_state=blob,
+                csrf_token=csrf,
+                redirect_uri=payload["redirect_uri"],
             )
         )
 
-    # POST — validate invite token, mint auth code, redirect back to client.
+    # ----- POST — same-origin + CSRF + consent + invite token -------------
+    if not _origin_referer_ok(request):
+        log.warning(
+            "authorize_login POST blocked: origin=%r referer=%r",
+            request.headers.get("origin"), request.headers.get("referer"),
+        )
+        return _no_cache_html(
+            "<h1>Request blocked</h1>"
+            "<p>This request did not come from the authorization page. "
+            "Restart the flow from your client.</p>",
+            status_code=403,
+        )
+
     form = await request.form()
     blob = str(form.get("oauth_state") or "")
     invite_token = str(form.get("invite_token") or "")
+    csrf_token = str(form.get("csrf_token") or "")
+    consent = str(form.get("consent") or "")
+    action = str(form.get("action") or "authorize")
+
     try:
         payload = verify_oauth_state(blob)
     except ValueError:
-        return HTMLResponse(
+        return _no_cache_html(
             "<h1>Invalid authorization request</h1>", status_code=400,
+        )
+
+    # Consume the CSRF token whether the user cancelled or authorised.
+    csrf_ok = await consume_csrf_token(csrf_token, blob)
+    if not csrf_ok:
+        return _no_cache_html(
+            "<h1>Authorization expired</h1>"
+            "<p>The authorization page expired or was reused. Restart the flow from your client.</p>",
+            status_code=403,
+        )
+
+    # Cancel path — short-circuit before touching invite token / DB.
+    if action == "cancel":
+        return _client_cancel_redirect(payload)
+
+    if consent != "yes":
+        return _no_cache_html(
+            "<h1>Consent required</h1>"
+            "<p>You must check the &ldquo;I authorize this connection&rdquo; box to continue.</p>",
+            status_code=400,
         )
 
     client = await _oauth_provider.get_client(payload["client_id"])
@@ -148,11 +238,15 @@ async def authorize_login(request: Request) -> Response:
         info = await _asyncio.to_thread(auth_mod.validate_token, invite_token)
     except AuthError as exc:
         log.warning("authorize_login: invite-token rejected: %s", exc)
-        return HTMLResponse(
+        # Re-render with a fresh CSRF token so the user can retry.
+        new_csrf = await issue_csrf_token(blob)
+        return _no_cache_html(
             render_login_form(
                 client_name=client_name or "an OAuth client",
                 scopes=payload.get("scopes") or [DESIGN_WRITE_SCOPE],
                 oauth_state=blob,
+                csrf_token=new_csrf,
+                redirect_uri=payload["redirect_uri"],
                 error="Invite token is invalid, revoked, or malformed.",
             ),
             status_code=401,
@@ -179,7 +273,7 @@ async def authorize_login(request: Request) -> Response:
     return RedirectResponse(
         url=f"{payload['redirect_uri']}{sep}{urlencode(qp)}",
         status_code=302,
-        headers={"Cache-Control": "no-store"},
+        headers=dict(_NO_CACHE_HEADERS),
     )
 
 
