@@ -25,7 +25,7 @@ from ..manifest import (
     FeatureCard,
     LandingPageManifest,
 )
-from ._brief_template import render_brief
+from ._brief_template import LANDING_PAGE_DEFAULTS, render_brief
 
 log = logging.getLogger(__name__)
 
@@ -40,13 +40,13 @@ def _load_contract() -> dict[str, Any]:
     return yaml.safe_load(CONTRACT_PATH.read_text())
 
 
-_CLARIFYING_QUESTIONS = [
-    "Who is this page for? (persona — age, situation, the pain point you're solving)",
-    "What single action should a visitor take? (book a call, request a quote, sign up, download)",
-    "Brand colours, fonts, or existing pages to match? Say \"you pick\" and I'll choose and call it out.",
-    "Top 2 or 3 benefits or proof points to feature? (numbers, badges, testimonials, awards)",
-    "Tone — friendly + casual, professional + clinical, playful, or authoritative?",
-    "Anything to avoid? (competitor styles, compliance-forbidden words, imagery to steer clear of)",
+_CLARIFYING_FIELDS: list[tuple[str, str]] = [
+    ("audience", "Who is this page for? (persona, situation, pain point)"),
+    ("primary_cta", "What single action should a visitor take? (book a call, request a quote, sign up, download)"),
+    ("palette", "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose."),
+    ("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
+    ("tone", "Tone — friendly + casual, professional + clinical, playful, or authoritative?"),
+    ("references_to_avoid", "Anything to avoid? (competitor styles, forbidden words, imagery)"),
 ]
 
 _CONTRACT_NOTES = (
@@ -56,6 +56,15 @@ _CONTRACT_NOTES = (
     "loading=\"lazy\" plus width, height and non-empty alt. Lead form posts to /api/handle_Client_Lead_Submission. "
     "Font from the contract's font_allowlist."
 )
+
+_SANITY_CHECK_ITEMS = [
+    "title <=70 chars",
+    "hero <img> preload + LCP pri",
+    "3 feature cards",
+    "lead form posts to /api/handle_Client_Lead_Submission",
+    "all imgs have width/height/alt",
+    "one <h1> in hero",
+]
 
 
 def _build_instructions(
@@ -68,8 +77,10 @@ def _build_instructions(
         brief=brief,
         slug_hint=slug_hint,
         references=references,
-        clarifying_questions=_CLARIFYING_QUESTIONS,
+        clarifying_fields=_CLARIFYING_FIELDS,
         family_contract_notes=_CONTRACT_NOTES,
+        defaults=LANDING_PAGE_DEFAULTS,
+        sanity_check_items=_SANITY_CHECK_ITEMS,
     )
 
 

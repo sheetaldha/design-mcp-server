@@ -402,8 +402,8 @@ class TestDesignLandingPage:
 
 # Phrases every family's instructions must surface so the caller's chat
 # walks the user through ask -> outline -> generate -> preview -> iterate -> submit.
+# Updated for the adaptive step-wise intake (Day-3 UX refresh).
 _SHARED_REQUIRED_PHRASES = [
-    "ask the user",
     "outline",
     "wait for",
     "submit_design",
@@ -411,9 +411,15 @@ _SHARED_REQUIRED_PHRASES = [
     "cancel_design",
     "<title>",
     "70 char",
-    "Ready to submit, iterate, or scrap",
+    "Submit · Iterate · Scrap",
     "show me the html",
     "Acknowledge",
+    "one at a time",
+    "Question",
+    "of M",
+    "just generate it",
+    "Sanity check",
+    "Echo back",
 ]
 
 
@@ -476,9 +482,68 @@ class TestInstructionsUX:
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_under_word_budget(self, family):
         text = _instructions_for(family, "anything")
-        # Soft budget per the spec — ~600 words per family. Allow a little slack.
+        # Soft budget per the spec — aim ~800 words, never past 850.
         word_count = len(text.split())
-        assert word_count <= 750, f"[{family}] instructions are {word_count} words; budget ~600"
+        assert word_count <= 850, f"[{family}] instructions are {word_count} words; budget ~800"
+
+    # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_mention_one_question_at_a_time(self, family):
+        text = _instructions_for(family, "anything")
+        assert "one at a time" in text.lower() or "ONE AT A TIME" in text, (
+            f"[{family}] instructions should require asking one question at a time"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_include_progress_indicator_pattern(self, family):
+        text = _instructions_for(family, "anything")
+        # Looks for the `*Question N of M*` progress prefix pattern.
+        assert "Question" in text and "of M" in text, (
+            f"[{family}] instructions should include the *Question N of M* progress prefix"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_include_speed_mode_escape_hatch(self, family):
+        text = _instructions_for(family, "anything")
+        assert "just generate it" in text, (
+            f"[{family}] instructions should include the speed-mode escape hatch"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_include_sanity_check_line(self, family):
+        text = _instructions_for(family, "anything")
+        assert "Sanity check" in text, (
+            f"[{family}] instructions should include the contract sanity-check line"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_include_tightened_submit_iterate_scrap(self, family):
+        text = _instructions_for(family, "anything")
+        assert "Submit · Iterate · Scrap" in text, (
+            f"[{family}] instructions should include the tightened Submit · Iterate · Scrap prompt"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_echo_back_filled_fields(self, family):
+        text = _instructions_for(family, "anything")
+        # The caller should be told to echo back what's filled in from the brief.
+        assert "Echo back" in text or "echo back" in text, (
+            f"[{family}] instructions should tell the caller to echo back filled fields"
+        )
+
+    def test_defaults_dict_exposed_for_each_family(self):
+        from design_mcp.generators._brief_template import (
+            LANDING_PAGE_DEFAULTS,
+            SURVEY_FUNNEL_DEFAULTS,
+        )
+        # Sanity: defaults dicts are non-empty and cover the per-family fields.
+        assert isinstance(LANDING_PAGE_DEFAULTS, dict)
+        assert isinstance(SURVEY_FUNNEL_DEFAULTS, dict)
+        for k in ("audience", "primary_cta", "palette", "benefits", "tone"):
+            assert k in LANDING_PAGE_DEFAULTS, f"Landing Page defaults missing {k!r}"
+        for k in ("audience", "steps", "otp", "submit_label", "post_submit", "palette"):
+            assert k in SURVEY_FUNNEL_DEFAULTS, f"Survey Funnel defaults missing {k!r}"
 
 
 # ---------------------------------------------------------------------------

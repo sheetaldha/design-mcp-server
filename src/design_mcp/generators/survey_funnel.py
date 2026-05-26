@@ -40,7 +40,7 @@ from ..manifest import (
     SurveyFunnelManifest,
     ThemeTokens,
 )
-from ._brief_template import render_brief
+from ._brief_template import SURVEY_FUNNEL_DEFAULTS, render_brief
 
 log = logging.getLogger(__name__)
 
@@ -74,24 +74,33 @@ def make_design_brief(
     }
 
 
-_CLARIFYING_QUESTIONS = [
-    "Who is the funnel qualifying? (persona — age, situation, the decision they're about to make)",
-    "How many steps (1 to 5) and roughly what does each ask? If unsure I'll suggest 3: situation, timeframe, contact details.",
-    "OTP / SMS verification step before submit — yes or skip?",
-    "What should the final submit button say? (e.g. \"Get My Quotes\", \"See My Match\", \"Apply Now\")",
-    "What happens after submit — thank-you on the same page, redirect, or both?",
-    "Brand colours, tone (friendly / professional / playful / authoritative), and any styles to avoid?",
+_CLARIFYING_FIELDS: list[tuple[str, str]] = [
+    ("audience", "Who is the funnel qualifying? (persona, situation, decision)"),
+    ("steps", "How many steps (1 to 5) and what does each ask? Default: 3 (situation, timeframe, contact details)."),
+    ("otp", "OTP / SMS verification before submit — yes or skip?"),
+    ("submit_label", "Final submit button label? (e.g. \"Get My Quotes\", \"See My Match\")"),
+    ("post_submit", "After submit — thank-you on the same page, redirect, or both?"),
+    ("palette", "Brand colours, tone (friendly / professional / playful / authoritative), styles to avoid?"),
 ]
 
 _CONTRACT_NOTES = (
     "Survey Funnel contract: self-contained HTML5, Tailwind v4 CDN, Option Y+ theming (CSS vars + /tokens.css). "
-    "One <h1> in the hero; step headings are <h2> or <legend>. 1 to 5 <fieldset data-step=\"...\"> blocks (default 3); "
-    "first visible, rest hidden, with a small inline <script type=\"module\"> toggling them on Next / Back. Linear "
-    "progression only — no next_step_when branching. If otp_enabled is true, render <section class=\"otp\" hidden> "
-    "between the final fieldset and submit, with a Send code button posting to /api/verificationsms. Final submit "
-    "posts to /api/handle_Client_Lead_Submission. Every <img>: src, alt, width, height; hero gets fetchpriority=\"high\" "
-    "loading=\"eager\", others loading=\"lazy\". radio/select/checkbox need an options list (min 2); text/email/tel forbid options."
+    "One <h1> in hero; step headings <h2>/<legend>. 1 to 5 <fieldset data-step=\"...\"> blocks (default 3); first visible, "
+    "rest hidden, inline <script type=\"module\"> toggling on Next/Back. Linear only — no next_step_when branching. "
+    "If otp_enabled, render <section class=\"otp\" hidden> between the final fieldset and submit, Send-code button posts "
+    "to /api/verificationsms. Final submit posts to /api/handle_Client_Lead_Submission. Every <img>: src, alt, width, "
+    "height; hero gets fetchpriority=\"high\" loading=\"eager\", others loading=\"lazy\". radio/select/checkbox need "
+    "options (min 2); text/email/tel forbid options."
 )
+
+_SANITY_CHECK_ITEMS = [
+    "title <=70 chars",
+    "one <h1> in hero",
+    "1 to 5 fieldset[data-step] blocks",
+    "OTP gate present when enabled",
+    "submit posts to /api/handle_Client_Lead_Submission",
+    "all imgs have width/height/alt",
+]
 
 
 def _build_instructions(
@@ -104,8 +113,10 @@ def _build_instructions(
         brief=brief,
         slug_hint=slug_hint,
         references=references,
-        clarifying_questions=_CLARIFYING_QUESTIONS,
+        clarifying_fields=_CLARIFYING_FIELDS,
         family_contract_notes=_CONTRACT_NOTES,
+        defaults=SURVEY_FUNNEL_DEFAULTS,
+        sanity_check_items=_SANITY_CHECK_ITEMS,
     )
 
 
