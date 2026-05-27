@@ -124,6 +124,7 @@ slug: solarquotes-test
 intent: Solar panel quote comparison for Aussie homeowners
 seo:
   title: SolarQuotes — Compare solar panel installers
+  site_name: SolarQuotes
   meta_description: Get up to 3 quotes from accredited Australian solar installers in under 3 minutes.
 hero:
   headline: Compare solar installer quotes in 3 minutes
@@ -187,6 +188,7 @@ def test_manifest_otp_defaults_to_false() -> None:
         intent="Stub intent that is long enough for validation.",
         seo=SeoBlock(
             title="Defaults test funnel",
+            site_name="Acquirely Test",
             meta_description=(
                 "A stub manifest used to verify defaults — otp_enabled should be false."
             ),
@@ -253,8 +255,9 @@ def test_stub_render_contains_required_pieces() -> None:
     assert html.count("<h1") == 1
     assert ":root" in html and "--color-primary" in html
     assert 'src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"' in html
-    # Final form posts to the Acquirely backend
-    assert 'action="/api/handle_Client_Lead_Submission"' in html
+    # Final form posts to the Acquirely backend (generic lead endpoint)
+    assert 'action="/api/add-lead"' in html
+    assert "/api/handle_Client_Lead_Submission" not in html
     # Stub uses otp_enabled=False → no OTP section emitted
     assert m.otp_enabled is False
     assert 'class="otp' not in html

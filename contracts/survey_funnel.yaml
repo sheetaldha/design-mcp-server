@@ -31,8 +31,8 @@ form_engine:
       Per-site toggle. When true, an OTP verification step renders between the
       final fieldset and the submit POST. OTP UI posts to /api/verificationsms
       (existing backend). When false, the final step submits straight to
-      /api/handle_Client_Lead_Submission.
-  submit_endpoint: /api/handle_Client_Lead_Submission   # shared with landing-page family
+      /api/add-lead.
+  submit_endpoint: /api/add-lead                         # generic micrositebackend lead endpoint — shared with landing-page family
   otp_endpoint:    /api/verificationsms                  # only used when otp_enabled=true
   progression: >
     Each step renders as a <fieldset> in a single HTML document. After step 1,
@@ -65,7 +65,7 @@ mandatory_sections:
       - "Each question has a name, type, label; type is one of text|email|tel|radio|select|checkbox"
       - "Required questions use HTML5 native `required` attribute"
       - "Steps after step 1 carry `hidden` attribute until Next button reveals them"
-      - "Final step's submit button POSTs to /api/handle_Client_Lead_Submission"
+      - "Final step's submit button POSTs to /api/add-lead"
       - "If otp_enabled=true, an <section class=\"otp\"> renders before submit and posts to /api/verificationsms"
       - "Privacy disclaimer link beneath the final step"
     cms_field_map:
@@ -105,25 +105,35 @@ optional_sections:
 
 # ────────────────────────────────────────────────────────────────────────────
 # SEO contract — mandatory <head> block. Identical to landing-page family.
+#
+# Rendering pattern (mirrors microsite-cms-field-mapping-2026-05-23.md):
+#   <title>{title} | {site_name}</title>
+# The brand suffix lives ONLY in <title>. og:title / twitter:title / JSON-LD
+# `name` stay bare (no suffix). `title` is capped at 60 chars on the manifest
+# so the rendered <title> (with " | {site_name}") lands at ≤ 75 chars.
 # ────────────────────────────────────────────────────────────────────────────
 seo:
   required:
-    title:           contentModel.meta_title
+    title:           contentModel.meta_title           # bare, ≤ 60 chars
+    site_name:       contentModel.site_name            # brand name appended to <title>
     meta_description: contentModel.meta_description
     canonical:       derived from manage_clients.domain + pages[i].url
-    og_title:        contentModel.meta_title
+    og_title:        contentModel.meta_title           # bare title (no suffix)
     og_description:  contentModel.meta_description
     og_image:        contentModel.section_first_img    # hero image
+    og_url:          derived from canonical            # MUST emit <meta property="og:url" content="{canonical}">
     og_type:         "website"
     twitter_card:    "summary_large_image"
-    twitter_title:   contentModel.meta_title
+    twitter_title:   contentModel.meta_title           # bare title (no suffix)
     twitter_description: contentModel.meta_description
     twitter_image:   contentModel.section_first_img
     jsonld:
       "@context": "https://schema.org"
       "@type":    "WebPage"
-      "name":     contentModel.meta_title
+      "name":     contentModel.meta_title              # bare title (no suffix)
       "description": contentModel.meta_description
+      "url":      derived from canonical               # MUST be present in the JSON-LD object
+  rendered_title_pattern: "{title} | {site_name}"      # applied only in <title>, not og:/twitter:/jsonld
 
 # ────────────────────────────────────────────────────────────────────────────
 # Image contract — identical to landing-page family.

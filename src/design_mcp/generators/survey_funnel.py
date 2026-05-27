@@ -18,8 +18,8 @@ Key Survey-Funnel rules enforced here:
     When `otp_enabled=true`, the renderer emits an <section class="otp">
     between the final fieldset and the final submit; UI posts to
     /api/verificationsms (existing backend endpoint).
-  - Final step submits to /api/handle_Client_Lead_Submission (shared with
-    landing-page family — integrations toggle via CMS, not per-page).
+  - Final step submits to /api/add-lead (generic micrositebackend lead endpoint,
+    shared with landing-page family — integrations toggle via CMS, not per-page).
 """
 
 from __future__ import annotations
@@ -76,6 +76,7 @@ def make_design_brief(
 
 _CLARIFYING_FIELDS: list[tuple[str, str]] = [
     ("audience", "Who is the funnel qualifying? (persona, situation, decision)"),
+    ("site_name", "Brand / site name to append after the page title (e.g. \"SolarQuotes\")? Derive from the brief if obvious; otherwise ask."),
     ("steps", "How many steps (1 to 5) and what does each ask? Default: 3 (situation, timeframe, contact details)."),
     ("otp", "OTP / SMS verification before submit — yes or skip?"),
     ("submit_label", "Final submit button label? (e.g. \"Get My Quotes\", \"See My Match\")"),
@@ -88,17 +89,24 @@ _CONTRACT_NOTES = (
     "One <h1> in hero; step headings <h2>/<legend>. 1 to 5 <fieldset data-step=\"...\"> blocks (default 3); first visible, "
     "rest hidden, inline <script type=\"module\"> toggling on Next/Back. Linear only — no next_step_when branching. "
     "If otp_enabled, render <section class=\"otp\" hidden> between the final fieldset and submit, Send-code button posts "
-    "to /api/verificationsms. Final submit posts to /api/handle_Client_Lead_Submission. Every <img>: src, alt, width, "
-    "height; hero gets fetchpriority=\"high\" loading=\"eager\", others loading=\"lazy\". radio/select/checkbox need "
-    "options (min 2); text/email/tel forbid options."
+    "to /api/verificationsms. Final submit posts to /api/add-lead (generic micrositebackend lead endpoint). Every "
+    "<img>: src, alt, width, height; hero gets fetchpriority=\"high\" loading=\"eager\", others loading=\"lazy\". "
+    "radio/select/checkbox need options (min 2); text/email/tel forbid options. "
+    "Manifest seo.title is the bare title (≤ 60 chars); also supply seo.site_name (3-50 chars, the brand name — "
+    "ask the user if not derivable from the brief). The rendered <title> MUST be \"{title} | {site_name}\" (the "
+    "brand suffix lives ONLY in <title>). og:title, twitter:title and JSON-LD `name`/`headline` stay BARE (no "
+    "suffix). Also emit <meta property=\"og:url\" content=\"{canonical_url}\"> and include "
+    "\"url\": \"{canonical_url}\" inside the JSON-LD WebPage object alongside `name` and `description`."
 )
 
 _SANITY_CHECK_ITEMS = [
-    "title <=70 chars",
+    "seo.title ≤60 chars (bare)",
+    "site_name present · <title>={title} | {site_name}",
+    "og:url present · JSON-LD url present",
     "one <h1> in hero",
     "1 to 5 fieldset[data-step] blocks",
     "OTP gate present when enabled",
-    "submit posts to /api/handle_Client_Lead_Submission",
+    "submit posts to /api/add-lead",
     "all imgs have width/height/alt",
 ]
 
@@ -132,6 +140,7 @@ def _stub_output(slug: str, brief: str) -> tuple[str, SurveyFunnelManifest, str]
         intent=brief[:200] if len(brief) >= 10 else f"Survey funnel stub for {slug}",
         seo=SeoBlock(
             title=f"{slug.replace('-', ' ').title()} — stub funnel",
+            site_name="Acquirely Stub",
             meta_description=(
                 f"Stub survey funnel for {slug}. Used by tests + previews. "
                 f"Real designs are produced by the caller's chat session via make_design_brief."
@@ -210,7 +219,7 @@ def _render_html(m: SurveyFunnelManifest) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <title>{_e(m.seo.title)}</title>
+  <title>{_e(m.seo.title)} | {_e(m.seo.site_name)}</title>
   <meta name="description" content="{_e(m.seo.meta_description)}">
   <link rel="canonical" href="{_e(canonical)}">
 
@@ -266,7 +275,7 @@ def _render_html(m: SurveyFunnelManifest) -> str:
   <main>
     <section id="step-1" class="bg-gray-50 py-[var(--spacing-section)]">
       <div class="max-w-xl mx-auto px-6">
-        <form id="survey-form" class="bg-white shadow-md rounded-lg p-8 space-y-6" action="/api/handle_Client_Lead_Submission" method="post" novalidate>
+        <form id="survey-form" class="bg-white shadow-md rounded-lg p-8 space-y-6" action="/api/add-lead" method="post" novalidate>
 {fieldsets_html}{otp_html}
           <p class="text-xs text-gray-500 text-center">By submitting, you agree to our <a href="#privacy" class="underline">privacy policy</a>.</p>
         </form>

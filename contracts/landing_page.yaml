@@ -44,7 +44,7 @@ mandatory_sections:
     must_have:
       - Name, email, phone fields (all required, HTML5 native validation)
       - Submit button with CMS-driven label (matches hero CTA for consistency)
-      - Posts to /api/handle_Client_Lead_Submission (existing backend, integrations toggle via CMS)
+      - Posts to /api/add-lead (generic micrositebackend lead endpoint — integrations toggle via CMS)
       - Privacy disclaimer link beneath
     cms_field_map:
       submit_label: contentModel.heading
@@ -83,25 +83,35 @@ optional_sections:
 
 # ────────────────────────────────────────────────────────────────────────────
 # SEO contract — mandatory <head> block. Skill A enforces; audit blocks if missing.
+#
+# Rendering pattern (mirrors microsite-cms-field-mapping-2026-05-23.md):
+#   <title>{title} | {site_name}</title>
+# The brand suffix lives ONLY in <title>. og:title / twitter:title / JSON-LD
+# `name` stay bare (no suffix). `title` is capped at 60 chars on the manifest
+# so the rendered <title> (with " | {site_name}") lands at ≤ 75 chars.
 # ────────────────────────────────────────────────────────────────────────────
 seo:
   required:
-    title:           contentModel.meta_title
+    title:           contentModel.meta_title           # bare, ≤ 60 chars
+    site_name:       contentModel.site_name            # brand name appended to <title>
     meta_description: contentModel.meta_description
     canonical:       derived from manage_clients.domain + pages[i].url
-    og_title:        contentModel.meta_title
+    og_title:        contentModel.meta_title           # bare title (no suffix)
     og_description:  contentModel.meta_description
     og_image:        contentModel.section_first_img    # hero image
+    og_url:          derived from canonical            # MUST emit <meta property="og:url" content="{canonical}">
     og_type:         "website"
     twitter_card:    "summary_large_image"
-    twitter_title:   contentModel.meta_title
+    twitter_title:   contentModel.meta_title           # bare title (no suffix)
     twitter_description: contentModel.meta_description
     twitter_image:   contentModel.section_first_img
     jsonld:
       "@context": "https://schema.org"
       "@type":    "WebPage"
-      "name":     contentModel.meta_title
+      "name":     contentModel.meta_title              # bare title (no suffix)
       "description": contentModel.meta_description
+      "url":      derived from canonical               # MUST be present in the JSON-LD object
+  rendered_title_pattern: "{title} | {site_name}"      # applied only in <title>, not og:/twitter:/jsonld
 
 # ────────────────────────────────────────────────────────────────────────────
 # Image contract — Skill A always generates with these attrs; audit enforces.

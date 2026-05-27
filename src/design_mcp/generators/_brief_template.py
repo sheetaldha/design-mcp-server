@@ -24,6 +24,7 @@ from typing import Optional
 # Per-family defaults used by speed-mode and missing-answer fallback.
 LANDING_PAGE_DEFAULTS: dict[str, str] = {
     "audience": "general consumers",
+    "site_name": "Acquirely",
     "primary_cta": "Get started",
     "palette": "modern blue (#2563eb primary, slate text)",
     "benefits": "three differentiated value props",
@@ -33,6 +34,7 @@ LANDING_PAGE_DEFAULTS: dict[str, str] = {
 
 SURVEY_FUNNEL_DEFAULTS: dict[str, str] = {
     "audience": "general consumers",
+    "site_name": "Acquirely",
     "steps": "3 (situation, timeframe, contact details)",
     "otp": "skip OTP",
     "submit_label": "Get My Quotes",
@@ -96,7 +98,8 @@ Speed-mode triggers: `just generate it`, `skip questions`, `use defaults`, `go a
 STEP 2 — Outline. No HTML yet.
 ```
 Outline (review before HTML):
-✅ Title: "..." (<X>/70 chars)
+✅ Title: "..." (<X>/60 chars, bare — site_name appended at render)
+✅ Site name: "..." (3-50 chars)
 ✅ Hero H1: "..."
 ✅ Sections: <flow>
 ✅ Primary CTA: "..."
@@ -109,12 +112,12 @@ Loop until sign-off.
 
 STEP 3 — Generate.
 {family_contract_notes}
-Keep <title> ≤70 chars; mirror across <title>, og:title, twitter:title, JSON-LD name/headline. Validate the manifest against the schema; fix anything that would fail.
+Keep `seo.title` bare and ≤60 chars on the manifest. Rendered `<title>` MUST be `{{title}} | {{site_name}}` (suffix only here — rendered title lands ≤75 chars). og:title, twitter:title, JSON-LD `name`/`headline` stay BARE (no suffix). Also emit `<meta property="og:url" content="{{canonical_url}}">` and include `"url": "{{canonical_url}}"` in the JSON-LD WebPage object alongside `name` and `description`. Lead form posts to `/api/add-lead`. Validate the manifest against the schema; fix anything that would fail.
 
 STEP 4 — Preview as checklist, not raw HTML.
 ```
 Generated:
-✅ Title (<X>/70): "..."
+✅ Title (<X>/60 bare): "..." | site_name="..."
 ✅ Hero H1 + LCP image
 ✅ <key sections / cards / steps>
 ✅ Lead form / submit: <fields or label>

@@ -42,6 +42,7 @@ def _load_contract() -> dict[str, Any]:
 
 _CLARIFYING_FIELDS: list[tuple[str, str]] = [
     ("audience", "Who is this page for? (persona, situation, pain point)"),
+    ("site_name", "Brand / site name to append after the page title (e.g. \"HealthBoost\")? Derive from the brief if obvious; otherwise ask."),
     ("primary_cta", "What single action should a visitor take? (book a call, request a quote, sign up, download)"),
     ("palette", "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose."),
     ("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
@@ -53,15 +54,23 @@ _CONTRACT_NOTES = (
     "Landing Page contract: self-contained HTML5 with Tailwind v4 via the CDN script, Option Y+ theming "
     "(CSS variables in :root plus /tokens.css), exactly one <h1> in the hero, exactly three feature cards "
     "in the manifest, hero LCP image with fetchpriority=\"high\" loading=\"eager\", every other <img> with "
-    "loading=\"lazy\" plus width, height and non-empty alt. Lead form posts to /api/handle_Client_Lead_Submission. "
-    "Font from the contract's font_allowlist."
+    "loading=\"lazy\" plus width, height and non-empty alt. Lead form posts to /api/add-lead "
+    "(generic micrositebackend lead endpoint). Font from the contract's font_allowlist. "
+    "Manifest seo.title is the bare title (≤ 60 chars); also supply seo.site_name (3-50 chars, the brand "
+    "name — ask the user if not derivable from the brief, e.g. brief mentions \"HealthBoost\" → "
+    "site_name=\"HealthBoost\"). The rendered <title> MUST be \"{title} | {site_name}\" (the brand suffix "
+    "lives ONLY in <title>). og:title, twitter:title and JSON-LD `name`/`headline` stay BARE (no suffix). "
+    "Also emit <meta property=\"og:url\" content=\"{canonical_url}\"> in the head and include "
+    "\"url\": \"{canonical_url}\" inside the JSON-LD WebPage object alongside `name` and `description`."
 )
 
 _SANITY_CHECK_ITEMS = [
-    "title <=70 chars",
+    "seo.title ≤60 chars (bare)",
+    "site_name present · <title>={title} | {site_name}",
+    "og:url present · JSON-LD url present",
     "hero <img> preload + LCP pri",
     "3 feature cards",
-    "lead form posts to /api/handle_Client_Lead_Submission",
+    "lead form posts to /api/add-lead",
     "all imgs have width/height/alt",
     "one <h1> in hero",
 ]
@@ -130,7 +139,7 @@ def _render_html(m: LandingPageManifest) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
-  <title>{_e(m.seo.title)}</title>
+  <title>{_e(m.seo.title)} | {_e(m.seo.site_name)}</title>
   <meta name="description" content="{_e(m.seo.meta_description)}">
   <link rel="canonical" href="{_e(canonical)}">
 
@@ -192,7 +201,7 @@ def _render_html(m: LandingPageManifest) -> str:
 
     <section id="signup" class="bg-gray-50 py-[var(--spacing-section)]">
       <div class="max-w-md mx-auto px-6">
-        <form class="bg-white shadow-md rounded-lg p-8 space-y-4" action="/api/handle_Client_Lead_Submission" method="post" novalidate>
+        <form class="bg-white shadow-md rounded-lg p-8 space-y-4" action="/api/add-lead" method="post" novalidate>
           <h2 class="text-2xl font-bold text-center">{_e(m.hero.cta_label)}</h2>
           <input type="text"  name="name"  placeholder="Your name"   required minlength="2" class="w-full px-4 py-2 border border-gray-300 rounded">
           <input type="email" name="email" placeholder="Your email"  required class="w-full px-4 py-2 border border-gray-300 rounded">

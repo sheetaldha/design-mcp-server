@@ -161,6 +161,7 @@ def _valid_manifest(slug: str = "test-landing") -> dict[str, Any]:
         "intent": "Test landing page used by the day-3 refactor pytest suite.",
         "seo": {
             "title": "Test Landing — Day 3 Refactor",
+            "site_name": "Acquirely Test",
             "meta_description": "Pytest-fixture landing page exercising the return-prompts submit_design flow.",
         },
         "hero": {
@@ -469,7 +470,7 @@ _SHARED_REQUIRED_PHRASES = [
     "update_design",
     "cancel_design",
     "<title>",
-    "70 char",
+    "60 char",
     "Next: **Submit** · **Iterate** · **Scrap**",
     "show me the html",
     "Acknowledge",
@@ -534,7 +535,9 @@ class TestInstructionsUX:
         text = _instructions_for("landing-page", "anything")
         assert "Landing Page" in text
         assert "feature cards" in text  # exactly 3 feature cards
-        assert "/api/handle_Client_Lead_Submission" in text
+        assert "/api/add-lead" in text
+        # The legacy endpoint that doesn't exist as a real route MUST NOT appear.
+        assert "/api/handle_Client_Lead_Submission" not in text
 
     def test_survey_funnel_instructions_carry_family_specific_rules(self):
         text = _instructions_for("survey-funnel", "anything")
@@ -542,7 +545,32 @@ class TestInstructionsUX:
         assert "OTP" in text
         assert "1 to 5" in text or "1..5" in text
         assert "/api/verificationsms" in text
-        assert "/api/handle_Client_Lead_Submission" in text
+        assert "/api/add-lead" in text
+        assert "/api/handle_Client_Lead_Submission" not in text
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_mention_site_name_and_title_suffix(self, family):
+        text = _instructions_for(family, "anything")
+        # Manifest field + render pattern + sanity line all need to mention site_name.
+        assert "site_name" in text, f"[{family}] instructions should mention the site_name manifest field"
+        assert "{title} | {site_name}" in text, (
+            f"[{family}] instructions should describe the rendered <title>={{title}} | {{site_name}} pattern"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_mention_og_url_and_jsonld_url(self, family):
+        text = _instructions_for(family, "anything")
+        assert "og:url" in text, f"[{family}] instructions should require <meta property='og:url'>"
+        # Either 'JSON-LD' or 'json-ld' phrasing — accept both.
+        assert "JSON-LD" in text or "json-ld" in text.lower(), (
+            f"[{family}] instructions should mention JSON-LD"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_mention_add_lead_endpoint(self, family):
+        text = _instructions_for(family, "anything")
+        assert "/api/add-lead" in text
+        assert "/api/handle_Client_Lead_Submission" not in text
 
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_contain_actual_clarifying_questions(self, family):
@@ -555,10 +583,11 @@ class TestInstructionsUX:
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_under_word_budget(self, family):
         text = _instructions_for(family, "anything")
-        # Checklist-default UX adds the polling + error-recovery blocks;
-        # hard ceiling 900 words.
+        # Checklist-default UX + SEO (site_name / og:url / JSON-LD url) +
+        # endpoint correction. Ceiling 1050 words leaves headroom for the
+        # parallel UX-guard agent's Step-4 rewrite.
         word_count = len(text.split())
-        assert word_count <= 900, f"[{family}] instructions are {word_count} words; ceiling 900"
+        assert word_count <= 1050, f"[{family}] instructions are {word_count} words; ceiling 1050"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -1004,3 +1033,87 @@ class TestIterationTools:
         result = cancel_design(design_id)
         assert result["ok"] is False
         assert result["status"] == "published"
+
+
+# ---------------------------------------------------------------------------
+# SeoBlock — new site_name field + tightened title length + render checks
+# ---------------------------------------------------------------------------
+
+class TestSeoBlock:
+    def test_valid_site_name_and_title_accepted(self):
+        from design_mcp.manifest import SeoBlock
+        seo = SeoBlock(
+            title="HealthBoost cover for over-50s",
+            site_name="HealthBoost",
+            meta_description="Health insurance comparison for Australians over 50 — quotes in 90 seconds.",
+        )
+        assert seo.title == "HealthBoost cover for over-50s"
+        assert seo.site_name == "HealthBoost"
+
+    def test_site_name_required(self):
+        from pydantic import ValidationError
+        from design_mcp.manifest import SeoBlock
+        with pytest.raises(ValidationError):
+            SeoBlock(
+                title="Some bare title",
+                meta_description="A long enough meta description to pass the 20-char minimum check.",
+            )
+
+    @pytest.mark.parametrize("site_name", ["", "ab", "x" * 51])
+    def test_site_name_length_rejected(self, site_name):
+        from pydantic import ValidationError
+        from design_mcp.manifest import SeoBlock
+        with pytest.raises(ValidationError):
+            SeoBlock(
+                title="Valid bare title",
+                site_name=site_name,
+                meta_description="A long enough meta description to pass the 20-char minimum check.",
+            )
+
+    @pytest.mark.parametrize("site_name", ["abc", "HealthBoost", "x" * 50])
+    def test_site_name_length_accepted(self, site_name):
+        from design_mcp.manifest import SeoBlock
+        seo = SeoBlock(
+            title="Valid bare title",
+            site_name=site_name,
+            meta_description="A long enough meta description to pass the 20-char minimum check.",
+        )
+        assert seo.site_name == site_name
+
+    def test_title_max_length_tightened_to_60(self):
+        from pydantic import ValidationError
+        from design_mcp.manifest import SeoBlock
+        # 61 chars should fail under the new ≤60 cap.
+        with pytest.raises(ValidationError):
+            SeoBlock(
+                title="x" * 61,
+                site_name="Acquirely",
+                meta_description="A long enough meta description to pass the 20-char minimum check.",
+            )
+
+    def test_title_at_60_chars_accepted(self):
+        from design_mcp.manifest import SeoBlock
+        seo = SeoBlock(
+            title="x" * 60,
+            site_name="Acquirely",
+            meta_description="A long enough meta description to pass the 20-char minimum check.",
+        )
+        assert len(seo.title) == 60
+
+    def test_render_html_emits_title_suffix_and_og_url(self):
+        """The fallback renderer must apply the {title} | {site_name} pattern
+        in <title> only, keep og:title bare, and emit og:url + JSON-LD url."""
+        from design_mcp.generators import landing_page as landing_gen
+        m = LandingPageManifest(**_valid_manifest())
+        html = landing_gen._render_html(m)
+        # <title> carries the suffix.
+        assert "<title>Test Landing — Day 3 Refactor | Acquirely Test</title>" in html
+        # og:title stays BARE (no " | site_name" suffix).
+        assert 'property="og:title" content="Test Landing — Day 3 Refactor"' in html
+        # og:url present and equal to canonical (defaulted from slug).
+        assert 'property="og:url"' in html
+        # JSON-LD WebPage object includes a url key.
+        assert '"url":' in html
+        # Form posts to the corrected endpoint.
+        assert 'action="/api/add-lead"' in html
+        assert "/api/handle_Client_Lead_Submission" not in html
