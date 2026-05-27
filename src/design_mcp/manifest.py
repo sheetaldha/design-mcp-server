@@ -33,7 +33,25 @@ class FormConfig(BaseModel):
 
 
 class SeoBlock(BaseModel):
-    title: str = Field(..., min_length=5, max_length=70)
+    title: str = Field(
+        ...,
+        min_length=5,
+        max_length=60,
+        description=(
+            "Bare page title (no brand suffix). Rendered <title> is "
+            "'{title} | {site_name}', which lands at ≤ 75 chars."
+        ),
+    )
+    site_name: str = Field(
+        ...,
+        min_length=3,
+        max_length=50,
+        description=(
+            "Brand or site name appended to the page title. Renders as "
+            "<title>{title} | {site_name}</title> in HTML. og:title / "
+            "twitter:title / JSON-LD name stay bare (no suffix)."
+        ),
+    )
     meta_description: str = Field(..., min_length=20, max_length=160)
     canonical_url: Optional[HttpUrl] = None
     og_image_url: Optional[str] = None
