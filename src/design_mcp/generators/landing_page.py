@@ -47,6 +47,12 @@ _CLARIFYING_FIELDS: list[tuple[str, str]] = [
     ("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
     ("tone", "Tone — friendly + casual, professional + clinical, playful, or authoritative?"),
     ("references_to_avoid", "Anything to avoid? (competitor styles, forbidden words, imagery)"),
+    (
+        "optional_sections_content",
+        "Want testimonials, FAQ, or trust badges? If so I need 2-6 testimonials "
+        "(quote+author+location), 3-10 FAQs (Q&A), and/or 3-8 trust badges "
+        "(label+detail). Or skip them.",
+    ),
 ]
 
 _CONTRACT_NOTES = (
@@ -54,9 +60,16 @@ _CONTRACT_NOTES = (
     "(CSS variables in :root plus /tokens.css), exactly one <h1> in the hero, exactly three feature cards "
     "in the manifest, hero LCP image with fetchpriority=\"high\" loading=\"eager\", every other <img> with "
     "loading=\"lazy\" plus width, height and non-empty alt. Lead form posts to /api/handle_Client_Lead_Submission. "
-    "Font from the contract's font_allowlist."
+    "Font from the contract's font_allowlist. "
+    "Optional sections: if `optional_sections` contains 'testimonials'/'faq'/'trust_badges', populate the "
+    "matching manifest field (testimonials 2-6, faq 3-10, trust_badges 3-8) and render the HTML FROM that "
+    "same data so manifest and HTML match — orphan flag-or-data fails validation."
 )
 
+# Static items rendered into the brief's STEP-4 sanity-check line.
+# (The brief is constructed before a manifest exists, so this list stays
+# manifest-agnostic; per-section data items are added at run time by
+# `sanity_check_items_for_manifest` once the manifest is in hand.)
 _SANITY_CHECK_ITEMS = [
     "title <=70 chars",
     "hero <img> preload + LCP pri",
@@ -64,7 +77,30 @@ _SANITY_CHECK_ITEMS = [
     "lead form posts to /api/handle_Client_Lead_Submission",
     "all imgs have width/height/alt",
     "one <h1> in hero",
+    "optional section data populated (testimonials 2-6, faq 3-10, trust_badges 3-8)",
 ]
+
+
+def sanity_check_items_for_manifest(manifest: LandingPageManifest) -> list[str]:
+    """Return the static sanity-check items PLUS per-section data items
+    conditional on `manifest.optional_sections`.
+
+    Used by callers that want the post-generation checklist (STEP 4) to spell
+    out the per-section counts. The brief itself uses the static list because
+    it is rendered before a manifest exists.
+    """
+    items = list(_SANITY_CHECK_ITEMS)
+    flags = set(manifest.optional_sections)
+    if "testimonials" in flags:
+        n = len(manifest.testimonials or [])
+        items.append(f"testimonials data populated ✓ ({n} items)")
+    if "faq" in flags:
+        n = len(manifest.faq or [])
+        items.append(f"faq data populated ✓ ({n} items)")
+    if "trust_badges" in flags:
+        n = len(manifest.trust_badges or [])
+        items.append(f"trust_badges data populated ✓ ({n} items)")
+    return items
 
 
 def _build_instructions(

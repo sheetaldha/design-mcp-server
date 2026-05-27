@@ -46,7 +46,17 @@ from mcp.server.auth.provider import AccessToken  # noqa: E402
 
 from design_mcp import drafts  # noqa: E402
 from design_mcp.generators import landing_page as landing_gen  # noqa: E402
-from design_mcp.manifest import LandingPageManifest  # noqa: E402
+from design_mcp.manifest import (  # noqa: E402
+    FaqItem,
+    LandingPageManifest,
+    Testimonial,
+    TrustBadge,
+)
+
+# Tell pytest's auto-collector that this Pydantic model is NOT a test class
+# (its name starts with "Test" so pytest tries to collect it otherwise).
+Testimonial.__test__ = False  # type: ignore[attr-defined]
+from pydantic import ValidationError  # noqa: E402
 from design_mcp import server as server_mod  # noqa: E402
 from design_mcp.server import (  # noqa: E402
     AuthContextError,
@@ -1004,3 +1014,250 @@ class TestIterationTools:
         result = cancel_design(design_id)
         assert result["ok"] is False
         assert result["status"] == "published"
+
+
+# ---------------------------------------------------------------------------
+# Optional-section structured data: Testimonial / FaqItem / TrustBadge models
+# plus the two-way contract on LandingPageManifest between
+# `optional_sections` flags and their sibling payload fields.
+# ---------------------------------------------------------------------------
+
+
+def _testimonial(**overrides) -> dict[str, Any]:
+    base = {
+        "quote": "Sold the place in nine days, $82k above the reserve, calmest auction we have ever sat through.",
+        "author": "Priya Singh",
+        "location": "Parramatta NSW",
+        "outcome": "Sold $82k above reserve",
+    }
+    base.update(overrides)
+    return base
+
+
+def _faq(**overrides) -> dict[str, Any]:
+    base = {
+        "question": "How long does the appraisal take?",
+        "answer": "About 30 minutes on site plus a follow-up call within 48 hours with the written report.",
+    }
+    base.update(overrides)
+    return base
+
+
+def _badge(**overrides) -> dict[str, Any]:
+    base = {
+        "label": "REIA member 2024",
+        "detail": "4.8★ on Google · 1,200 reviews",
+    }
+    base.update(overrides)
+    return base
+
+
+class TestOptionalSectionModels:
+    def test_testimonial_round_trip(self):
+        t = Testimonial(**_testimonial())
+        assert t.quote.startswith("Sold the place")
+        assert t.author == "Priya Singh"
+        assert t.location == "Parramatta NSW"
+        assert t.outcome == "Sold $82k above reserve"
+
+    def test_testimonial_quote_too_short_rejected(self):
+        with pytest.raises(ValidationError):
+            Testimonial(**_testimonial(quote="too short"))  # < 20 chars
+
+    def test_testimonial_quote_too_long_rejected(self):
+        with pytest.raises(ValidationError):
+            Testimonial(**_testimonial(quote="x" * 401))  # > 400 chars
+
+    def test_testimonial_author_too_short_rejected(self):
+        with pytest.raises(ValidationError):
+            Testimonial(**_testimonial(author="X"))  # < 2 chars
+
+    def test_testimonial_location_and_outcome_optional(self):
+        t = Testimonial(quote="A" * 25, author="Jane Doe")
+        assert t.location is None
+        assert t.outcome is None
+
+    def test_faq_round_trip(self):
+        f = FaqItem(**_faq())
+        assert f.question.endswith("?")
+        assert len(f.answer) >= 20
+
+    def test_faq_question_too_short_rejected(self):
+        with pytest.raises(ValidationError):
+            FaqItem(question="short?", answer="x" * 25)
+
+    def test_faq_answer_too_short_rejected(self):
+        with pytest.raises(ValidationError):
+            FaqItem(question="A reasonable question?", answer="short")
+
+    def test_trust_badge_round_trip(self):
+        b = TrustBadge(**_badge())
+        assert b.label == "REIA member 2024"
+        assert b.icon_url is None
+        assert b.detail == "4.8★ on Google · 1,200 reviews"
+
+    def test_trust_badge_label_too_short_rejected(self):
+        with pytest.raises(ValidationError):
+            TrustBadge(label="X")
+
+    def test_trust_badge_icon_and_detail_optional(self):
+        b = TrustBadge(label="Trusted Partner")
+        assert b.icon_url is None
+        assert b.detail is None
+
+
+class TestLandingPageOptionalSectionsValidator:
+    def _base(self) -> dict[str, Any]:
+        return _valid_manifest()
+
+    def test_no_optional_sections_no_data_is_valid(self):
+        LandingPageManifest(**self._base())  # smoke: backwards-compat
+
+    def test_enabling_testimonials_without_data_fails(self):
+        bad = self._base()
+        bad["optional_sections"] = ["testimonials"]
+        with pytest.raises(ValidationError) as ei:
+            LandingPageManifest(**bad)
+        assert "testimonials" in str(ei.value)
+
+    def test_enabling_testimonials_with_one_item_fails_min(self):
+        bad = self._base()
+        bad["optional_sections"] = ["testimonials"]
+        bad["testimonials"] = [_testimonial()]  # only 1 (min 2)
+        with pytest.raises(ValidationError) as ei:
+            LandingPageManifest(**bad)
+        assert "2-6" in str(ei.value)
+
+    def test_enabling_testimonials_with_seven_items_fails_max(self):
+        bad = self._base()
+        bad["optional_sections"] = ["testimonials"]
+        bad["testimonials"] = [_testimonial() for _ in range(7)]
+        with pytest.raises(ValidationError) as ei:
+            LandingPageManifest(**bad)
+        assert "2-6" in str(ei.value)
+
+    def test_orphan_testimonials_without_flag_fails(self):
+        bad = self._base()
+        bad["optional_sections"] = []  # flag NOT set
+        bad["testimonials"] = [_testimonial(), _testimonial()]
+        with pytest.raises(ValidationError) as ei:
+            LandingPageManifest(**bad)
+        assert "orphan" in str(ei.value) or "without" in str(ei.value)
+
+    def test_enabling_faq_without_data_fails(self):
+        bad = self._base()
+        bad["optional_sections"] = ["faq"]
+        with pytest.raises(ValidationError):
+            LandingPageManifest(**bad)
+
+    def test_enabling_faq_with_two_items_fails_min(self):
+        bad = self._base()
+        bad["optional_sections"] = ["faq"]
+        bad["faq"] = [_faq(), _faq(question="Another good question, is it?")]
+        with pytest.raises(ValidationError) as ei:
+            LandingPageManifest(**bad)
+        assert "3-10" in str(ei.value)
+
+    def test_orphan_faq_without_flag_fails(self):
+        bad = self._base()
+        bad["faq"] = [_faq(), _faq(), _faq()]
+        with pytest.raises(ValidationError):
+            LandingPageManifest(**bad)
+
+    def test_enabling_trust_badges_without_data_fails(self):
+        bad = self._base()
+        bad["optional_sections"] = ["trust_badges"]
+        with pytest.raises(ValidationError):
+            LandingPageManifest(**bad)
+
+    def test_enabling_trust_badges_with_two_items_fails_min(self):
+        bad = self._base()
+        bad["optional_sections"] = ["trust_badges"]
+        bad["trust_badges"] = [_badge(), _badge(label="Award Winner")]
+        with pytest.raises(ValidationError) as ei:
+            LandingPageManifest(**bad)
+        assert "3-8" in str(ei.value)
+
+    def test_orphan_trust_badges_without_flag_fails(self):
+        bad = self._base()
+        bad["trust_badges"] = [_badge(), _badge(), _badge()]
+        with pytest.raises(ValidationError):
+            LandingPageManifest(**bad)
+
+    def test_all_three_sections_enabled_and_populated_is_valid(self):
+        good = self._base()
+        good["optional_sections"] = ["testimonials", "faq", "trust_badges"]
+        good["testimonials"] = [_testimonial() for _ in range(2)]
+        good["faq"] = [_faq() for _ in range(3)]
+        good["trust_badges"] = [_badge() for _ in range(3)]
+        m = LandingPageManifest(**good)
+        assert len(m.testimonials) == 2
+        assert len(m.faq) == 3
+        assert len(m.trust_badges) == 3
+
+    def test_max_bounds_inclusive_are_valid(self):
+        good = self._base()
+        good["optional_sections"] = ["testimonials", "faq", "trust_badges"]
+        good["testimonials"] = [_testimonial() for _ in range(6)]
+        good["faq"] = [_faq() for _ in range(10)]
+        good["trust_badges"] = [_badge() for _ in range(8)]
+        LandingPageManifest(**good)  # should not raise
+
+    def test_sticky_cta_mobile_flag_carries_no_payload(self):
+        good = self._base()
+        good["optional_sections"] = ["sticky_cta_mobile"]
+        # No sibling payload required for this flag — must remain valid.
+        LandingPageManifest(**good)
+
+
+class TestSanityCheckHelper:
+    def test_static_items_only_when_no_optional_sections(self):
+        m = LandingPageManifest(**_valid_manifest())
+        items = landing_gen.sanity_check_items_for_manifest(m)
+        joined = " | ".join(items)
+        assert "testimonials data populated" not in joined
+        assert "faq data populated" not in joined
+        assert "trust_badges data populated" not in joined
+
+    def test_appends_per_section_items_when_flags_set(self):
+        data = _valid_manifest()
+        data["optional_sections"] = ["testimonials", "faq", "trust_badges"]
+        data["testimonials"] = [_testimonial() for _ in range(3)]
+        data["faq"] = [_faq() for _ in range(4)]
+        data["trust_badges"] = [_badge() for _ in range(5)]
+        m = LandingPageManifest(**data)
+        items = landing_gen.sanity_check_items_for_manifest(m)
+        joined = " | ".join(items)
+        assert "testimonials data populated ✓ (3 items)" in joined
+        assert "faq data populated ✓ (4 items)" in joined
+        assert "trust_badges data populated ✓ (5 items)" in joined
+
+
+class TestInstructionsCarryOptionalSectionsGuidance:
+    def test_landing_brief_mentions_optional_sections_content_field(self):
+        text = _instructions_for("landing-page", "anything")
+        assert "optional_sections_content" in text
+
+    def test_landing_brief_mentions_section_counts(self):
+        text = _instructions_for("landing-page", "anything")
+        assert "2-6" in text
+        assert "3-10" in text
+        assert "3-8" in text
+
+    def test_landing_brief_mentions_testimonials_faq_trust_badges(self):
+        text = _instructions_for("landing-page", "anything")
+        lower = text.lower()
+        assert "testimonials" in lower
+        assert "faq" in lower
+        assert "trust badges" in lower or "trust_badges" in lower
+
+    def test_landing_brief_mentions_populated(self):
+        text = _instructions_for("landing-page", "anything")
+        assert "populated" in text.lower()
+
+    def test_landing_brief_default_skips_optional_sections(self):
+        from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
+        assert (
+            LANDING_PAGE_DEFAULTS.get("optional_sections_content")
+            == "no optional sections"
+        )

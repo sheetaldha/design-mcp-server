@@ -29,6 +29,10 @@ LANDING_PAGE_DEFAULTS: dict[str, str] = {
     "benefits": "three differentiated value props",
     "tone": "friendly + professional",
     "references_to_avoid": "none stated",
+    # Speed-mode skips optional sections rather than fabricating fake
+    # testimonials / FAQs / trust badges. If the user wants them, they answer
+    # the optional_sections_content clarifying question explicitly.
+    "optional_sections_content": "no optional sections",
 }
 
 SURVEY_FUNNEL_DEFAULTS: dict[str, str] = {
