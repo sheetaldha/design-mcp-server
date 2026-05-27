@@ -67,19 +67,42 @@ mandatory_sections:
 # Skill A includes only the ones explicitly requested (or inferred from references).
 # ────────────────────────────────────────────────────────────────────────────
 optional_sections:
-  - id: testimonials
-    description: Customer quote carousel or grid (2-4 quotes)
-    cms_field_map: { content: contentModel.section_second_paragraph }
-  - id: faq
-    description: 3-6 Q&A pairs in accordion
-    cms_field_map: { content: contentModel.section_third_paragraph }
-    toggle: contentModel.page_sub_title  # "show" / "hide" — legacy string flag
-  - id: trust_badges
-    description: Row of partner/award/security logos
-    cms_field_map: { items: contentModel.col_one }  # legacy HTML bucket
-  - id: sticky_cta_mobile
-    description: Sticky bottom CTA bar on mobile that scrolls to form
-    cms_field_map: { enabled: derived from family options }
+  flags_enum: [testimonials, faq, trust_badges, sticky_cta_mobile]
+  # When a flag is enabled, the manifest MUST also carry structured data for
+  # that section. Skill B's Map agent reads the structured data to compile
+  # React layout components — falling back to HTML-scraping is fragile and
+  # banned. The Pydantic model `LandingPageManifest` enforces a two-way check:
+  # flag-without-data and data-without-flag are both rejected.
+  data_required_for:
+    testimonials:
+      shape: "list[{quote, author, location?, outcome?}]"
+      count: "2-6 items"
+      manifest_field: testimonials
+    faq:
+      shape: "list[{question, answer}]"
+      count: "3-10 items"
+      manifest_field: faq
+    trust_badges:
+      shape: "list[{label, icon_url?, detail?}]"
+      count: "3-8 items"
+      manifest_field: trust_badges
+    sticky_cta_mobile:
+      shape: "(no payload — pure render-time flag)"
+      count: "n/a"
+  items:
+    - id: testimonials
+      description: Customer quote carousel or grid (2-6 quotes)
+      cms_field_map: { content: contentModel.section_second_paragraph }
+    - id: faq
+      description: 3-10 Q&A pairs in accordion
+      cms_field_map: { content: contentModel.section_third_paragraph }
+      toggle: contentModel.page_sub_title  # "show" / "hide" — legacy string flag
+    - id: trust_badges
+      description: Row of partner/award/security logos (3-8 items)
+      cms_field_map: { items: contentModel.col_one }  # legacy HTML bucket
+    - id: sticky_cta_mobile
+      description: Sticky bottom CTA bar on mobile that scrolls to form
+      cms_field_map: { enabled: derived from family options }
 
 # ────────────────────────────────────────────────────────────────────────────
 # SEO contract — mandatory <head> block. Skill A enforces; audit blocks if missing.

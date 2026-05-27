@@ -6,7 +6,7 @@ to know how to populate CMS fields. The audit agent validates against it.
 
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator, model_validator
 
@@ -57,6 +57,30 @@ class SeoBlock(BaseModel):
     og_image_url: Optional[str] = None
 
 
+# ---------------------------------------------------------------------------
+# Optional-section payloads — structured data the Landing Page family carries
+# when the corresponding flag is enabled in `optional_sections`. Skill B's Map
+# agent reads these to compile React layout components without HTML-scraping.
+# ---------------------------------------------------------------------------
+
+class Testimonial(BaseModel):
+    quote: str = Field(min_length=20, max_length=400)
+    author: str = Field(min_length=2, max_length=80)
+    location: Optional[str] = Field(default=None, max_length=80)
+    outcome: Optional[str] = Field(default=None, max_length=120)  # e.g. "Sold $82k above reserve"
+
+
+class FaqItem(BaseModel):
+    question: str = Field(min_length=10, max_length=200)
+    answer: str = Field(min_length=20, max_length=800)
+
+
+class TrustBadge(BaseModel):
+    label: str = Field(min_length=2, max_length=80)
+    icon_url: Optional[str] = Field(default=None)  # optional logo/icon URL
+    detail: Optional[str] = Field(default=None, max_length=120)  # e.g. "4.8★ on Google · 1,200 reviews"
+
+
 # Allowlist must match contracts/landing_page.yaml `font_allowlist`.
 # These are the only fonts the CMS supports today (existing leadloom dropdown).
 ALLOWED_FONTS = {
@@ -100,7 +124,56 @@ class LandingPageManifest(BaseModel):
     features: list[FeatureCard] = Field(..., min_length=3, max_length=3)
     form: FormConfig
     optional_sections: list[Literal["testimonials", "faq", "trust_badges", "sticky_cta_mobile"]] = Field(default_factory=list)
+    testimonials: Optional[list[Testimonial]] = Field(
+        default=None,
+        description="Required if 'testimonials' in optional_sections. Min 2, max 6 items.",
+    )
+    faq: Optional[list[FaqItem]] = Field(
+        default=None,
+        description="Required if 'faq' in optional_sections. Min 3, max 10 items.",
+    )
+    trust_badges: Optional[list[TrustBadge]] = Field(
+        default=None,
+        description="Required if 'trust_badges' in optional_sections. Min 3, max 8 items.",
+    )
     theme: ThemeTokens = Field(default_factory=ThemeTokens)
+
+    @model_validator(mode="after")
+    def _optional_section_data_matches_flags(self) -> "LandingPageManifest":
+        """Enforce a two-way contract between `optional_sections` flags and their
+        structured-data payloads.
+
+        - If a flag is set, the corresponding field must be populated within the
+          per-section bounds (testimonials 2-6, faq 3-10, trust_badges 3-8).
+        - If the data is provided without the flag, refuse it (orphan data would
+          silently render nothing and confuse Skill B's Map agent).
+        """
+        flags = set(self.optional_sections)
+        rules: list[tuple[str, str, Optional[list[Any]], int, int]] = [  # type: ignore[name-defined]
+            ("testimonials", "testimonials", self.testimonials, 2, 6),
+            ("faq", "faq", self.faq, 3, 10),
+            ("trust_badges", "trust_badges", self.trust_badges, 3, 8),
+        ]
+        for flag, field_name, data, lo, hi in rules:
+            enabled = flag in flags
+            if enabled:
+                if data is None:
+                    raise ValueError(
+                        f"optional_sections includes '{flag}' but `{field_name}` is missing; "
+                        f"provide {lo}-{hi} items."
+                    )
+                if not (lo <= len(data) <= hi):
+                    raise ValueError(
+                        f"`{field_name}` must contain {lo}-{hi} items when '{flag}' is enabled; "
+                        f"got {len(data)}."
+                    )
+            else:
+                if data is not None:
+                    raise ValueError(
+                        f"`{field_name}` provided without '{flag}' in optional_sections; "
+                        f"enable the flag or remove the data (orphan data is refused)."
+                    )
+        return self
 
 
 # ---------------------------------------------------------------------------
