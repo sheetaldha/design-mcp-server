@@ -25,7 +25,7 @@ from ..manifest import (
     FeatureCard,
     LandingPageManifest,
 )
-from ._brief_template import LANDING_PAGE_DEFAULTS, render_brief
+from ._brief_template import LANDING_PAGE_DEFAULTS, ClarifyingField, field, render_brief
 
 log = logging.getLogger(__name__)
 
@@ -40,15 +40,41 @@ def _load_contract() -> dict[str, Any]:
     return yaml.safe_load(CONTRACT_PATH.read_text())
 
 
-_CLARIFYING_FIELDS: list[tuple[str, str]] = [
-    ("audience", "Who is this page for? (persona, situation, pain point)"),
-    ("site_name", "Brand / site name to append after the page title (e.g. \"HealthBoost\")? Derive from the brief if obvious; otherwise ask."),
-    ("primary_cta", "What single action should a visitor take? (book a call, request a quote, sign up, download)"),
-    ("palette", "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose."),
-    ("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
-    ("tone", "Tone — friendly + casual, professional + clinical, playful, or authoritative?"),
-    ("references_to_avoid", "Anything to avoid? (competitor styles, forbidden words, imagery)"),
-    (
+_CLARIFYING_FIELDS: list[ClarifyingField] = [
+    field(
+        "page_intent",
+        "What is this landing page for?",
+        "An Acquirely product/service",
+        "A client / external brand",
+        "Lead-gen / waitlist",
+        "Internal tool / utility",
+    ),
+    field("audience", "Who is this page for? (persona, situation, pain point)"),
+    field(
+        "site_name",
+        "Brand / site name to append after the page title (e.g. \"HealthBoost\")? Derive from the brief if obvious; otherwise ask.",
+    ),
+    field(
+        "primary_cta",
+        "What single action should a visitor take? (book a call, request a quote, sign up, download)",
+        "Book a consultation/demo",
+        "Request a quote",
+        "Sign up / create account",
+        "Download / get the guide",
+        "Contact us",
+    ),
+    field("palette", "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose."),
+    field("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
+    field(
+        "tone",
+        "Tone — friendly + casual, professional + clinical, playful, or authoritative?",
+        "Friendly + casual",
+        "Professional + clinical",
+        "Playful + bold",
+        "Authoritative + premium",
+    ),
+    field("references_to_avoid", "Anything to avoid? (competitor styles, forbidden words, imagery)"),
+    field(
         "optional_sections_content",
         "Want testimonials, FAQ, or trust badges? If so I need 2-6 testimonials "
         "(quote+author+location), 3-10 FAQs (Q&A), and/or 3-8 trust badges "

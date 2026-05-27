@@ -598,12 +598,12 @@ class TestInstructionsUX:
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_under_word_budget(self, family):
         text = _instructions_for(family, "anything")
-        # Post-merge of the 3 May-27 parallel branches (UX guard + SEO fields +
-        # optional-section data). Landing currently renders ~1218 words,
-        # survey ~1169. Ceiling 1250 keeps a small headroom; trim instructions
-        # in a follow-up if real-world usage shows the brief feels too long.
+        # Post-addition of per-field suggested_options guidance (each option-bearing
+        # field now spells out the AskUserQuestion option set inline) the briefs
+        # grew to ~1422 (landing) / ~1438 (survey). Ceiling 1500 keeps headroom
+        # for one or two more curated option lists without forcing a trim.
         word_count = len(text.split())
-        assert word_count <= 1250, f"[{family}] instructions are {word_count} words; ceiling 1250"
+        assert word_count <= 1500, f"[{family}] instructions are {word_count} words; ceiling 1500"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -1377,3 +1377,170 @@ class TestInstructionsCarryOptionalSectionsGuidance:
             LANDING_PAGE_DEFAULTS.get("optional_sections_content")
             == "no optional sections"
         )
+
+
+# ---------------------------------------------------------------------------
+# ClarifyingField dataclass + suggested_options surfacing in instructions
+# ---------------------------------------------------------------------------
+
+
+# Curated option lists every brief MUST surface verbatim so the caller can
+# feed them straight into claude.ai's AskUserQuestion multi-choice card UI.
+_LANDING_PAGE_REQUIRED_OPTIONS = [
+    # page_intent
+    "An Acquirely product/service",
+    "A client / external brand",
+    "Lead-gen / waitlist",
+    "Internal tool / utility",
+    # primary_cta
+    "Book a consultation/demo",
+    "Request a quote",
+    "Sign up / create account",
+    "Download / get the guide",
+    "Contact us",
+    # tone
+    "Friendly + casual",
+    "Professional + clinical",
+    "Playful + bold",
+    "Authoritative + premium",
+]
+
+_SURVEY_FUNNEL_REQUIRED_OPTIONS = [
+    # vertical
+    "Health insurance",
+    "Solar / energy",
+    "Finance / loans",
+    "Insurance (general)",
+    "Property",
+    "Telco",
+    "Other",
+    # steps
+    "1 step (contact only)",
+    "2 steps (qualifier + contact)",
+    "3 steps (situation + timeframe + contact)",
+    "4 steps (multi-qualifier)",
+    "5 steps",
+    # otp
+    "Yes, include OTP",
+    "Skip OTP",
+    # submit_label
+    "Get my quotes",
+    "See my match",
+    "Apply now",
+    "Get my report",
+    # post_submit
+    "Thank-you on same page",
+    "Redirect to external URL",
+    "Both (thank-you then redirect)",
+    # tone
+    "Friendly + casual",
+    "Professional + clinical",
+    "Playful + bold",
+    "Authoritative + premium",
+]
+
+
+class TestClarifyingFieldShape:
+    def test_clarifying_field_is_a_frozen_dataclass(self):
+        from design_mcp.generators._brief_template import ClarifyingField
+        cf = ClarifyingField(key="k", question="q?", suggested_options=("A", "B"))
+        assert cf.key == "k"
+        assert cf.question == "q?"
+        assert cf.suggested_options == ("A", "B")
+        # Free-form default.
+        cf2 = ClarifyingField(key="k2", question="q2?")
+        assert cf2.suggested_options is None
+
+    def test_field_helper_builds_clarifying_field(self):
+        from design_mcp.generators._brief_template import ClarifyingField, field
+        cf = field("k", "q?", "A", "B", "C")
+        assert isinstance(cf, ClarifyingField)
+        assert cf.suggested_options == ("A", "B", "C")
+        # No options -> None
+        cf2 = field("k", "q?")
+        assert cf2.suggested_options is None
+
+    def test_landing_page_clarifying_fields_use_new_shape(self):
+        from design_mcp.generators._brief_template import ClarifyingField
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        assert all(isinstance(cf, ClarifyingField) for cf in _CLARIFYING_FIELDS)
+
+    def test_survey_funnel_clarifying_fields_use_new_shape(self):
+        from design_mcp.generators._brief_template import ClarifyingField
+        from design_mcp.generators.survey_funnel import _CLARIFYING_FIELDS
+        assert all(isinstance(cf, ClarifyingField) for cf in _CLARIFYING_FIELDS)
+
+    def test_page_intent_is_first_landing_page_field(self):
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        assert _CLARIFYING_FIELDS[0].key == "page_intent"
+        # Carries the curated option set.
+        assert _CLARIFYING_FIELDS[0].suggested_options is not None
+        assert "An Acquirely product/service" in _CLARIFYING_FIELDS[0].suggested_options
+
+    def test_vertical_is_first_survey_funnel_field(self):
+        from design_mcp.generators.survey_funnel import _CLARIFYING_FIELDS
+        assert _CLARIFYING_FIELDS[0].key == "vertical"
+        assert _CLARIFYING_FIELDS[0].suggested_options is not None
+        assert "Health insurance" in _CLARIFYING_FIELDS[0].suggested_options
+
+
+class TestSuggestedOptionsRendered:
+    def test_landing_page_brief_carries_page_intent_question(self):
+        text = _instructions_for("landing-page", "anything")
+        assert "page_intent" in text
+        assert "What is this landing page for?" in text
+
+    def test_survey_funnel_brief_carries_vertical_question(self):
+        text = _instructions_for("survey-funnel", "anything")
+        assert "vertical" in text
+        assert "What vertical is this funnel qualifying for?" in text
+
+    @pytest.mark.parametrize("option", _LANDING_PAGE_REQUIRED_OPTIONS)
+    def test_landing_page_brief_surfaces_each_option(self, option):
+        text = _instructions_for("landing-page", "anything")
+        assert option in text, (
+            f"landing-page instructions must surface suggested option {option!r} verbatim"
+        )
+
+    @pytest.mark.parametrize("option", _SURVEY_FUNNEL_REQUIRED_OPTIONS)
+    def test_survey_funnel_brief_surfaces_each_option(self, option):
+        text = _instructions_for("survey-funnel", "anything")
+        assert option in text, (
+            f"survey-funnel instructions must surface suggested option {option!r} verbatim"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_brief_mentions_ask_user_question_convention(self, family):
+        text = _instructions_for(family, "anything")
+        assert "AskUserQuestion" in text, (
+            f"[{family}] instructions must name the AskUserQuestion tool"
+        )
+        assert "multi-choice" in text, (
+            f"[{family}] instructions must describe the multi-choice card UI"
+        )
+        assert "Other" in text, (
+            f"[{family}] instructions must instruct callers to offer an 'Other' escape"
+        )
+        assert "plain text" in text, (
+            f"[{family}] instructions must describe the plain-text fallback for free-form fields"
+        )
+
+    def test_landing_page_free_form_field_marked_plain_text(self):
+        # `audience` has no suggested_options — should be rendered as plain text.
+        text = _instructions_for("landing-page", "anything")
+        assert "Ask audience as plain text" in text
+
+    def test_survey_funnel_free_form_field_marked_plain_text(self):
+        # `audience` has no suggested_options on survey-funnel either.
+        text = _instructions_for("survey-funnel", "anything")
+        assert "Ask audience as plain text" in text
+
+
+class TestNewDefaults:
+    def test_landing_page_defaults_include_page_intent(self):
+        from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
+        assert LANDING_PAGE_DEFAULTS.get("page_intent") == "An Acquirely product/service"
+
+    def test_survey_funnel_defaults_include_vertical(self):
+        from design_mcp.generators._brief_template import SURVEY_FUNNEL_DEFAULTS
+        assert SURVEY_FUNNEL_DEFAULTS.get("vertical") == "Other"

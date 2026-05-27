@@ -18,11 +18,37 @@ caller's session at run time.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
+
+
+@dataclass(frozen=True)
+class ClarifyingField:
+    """A single clarifying question slot in a design-family intake.
+
+    `suggested_options` carries a curated short-list of answers the caller
+    should surface via claude.ai's built-in `AskUserQuestion` multi-choice
+    card UI. Leave it as None for free-form text fields where the answer
+    space is too varied to pre-enumerate.
+    """
+
+    key: str
+    question: str
+    suggested_options: Optional[tuple[str, ...]] = None
+
+
+def field(key: str, question: str, *options: str) -> ClarifyingField:
+    """Convenience constructor — `field("k", "q?", "A", "B")` vs the dataclass form."""
+    return ClarifyingField(
+        key=key,
+        question=question,
+        suggested_options=tuple(options) if options else None,
+    )
 
 
 # Per-family defaults used by speed-mode and missing-answer fallback.
 LANDING_PAGE_DEFAULTS: dict[str, str] = {
+    "page_intent": "An Acquirely product/service",
     "audience": "general consumers",
     "site_name": "Acquirely",
     "primary_cta": "Get started",
@@ -37,6 +63,7 @@ LANDING_PAGE_DEFAULTS: dict[str, str] = {
 }
 
 SURVEY_FUNNEL_DEFAULTS: dict[str, str] = {
+    "vertical": "Other",
     "audience": "general consumers",
     "site_name": "Acquirely",
     "steps": "3 (situation, timeframe, contact details)",
@@ -48,13 +75,34 @@ SURVEY_FUNNEL_DEFAULTS: dict[str, str] = {
 }
 
 
+def _render_field_line(cf: ClarifyingField) -> str:
+    """Format one clarifying-field bullet for STEP 1 of the brief.
+
+    Fields with `suggested_options` direct the caller to use claude.ai's
+    AskUserQuestion multi-choice card UI with the curated option set (plus
+    an always-on "Other" free-text escape). Free-form fields render as plain
+    text questions.
+    """
+    if cf.suggested_options:
+        opts = ", ".join(f'"{o}"' for o in cf.suggested_options)
+        return (
+            f"  - {cf.key}: {cf.question}\n"
+            f"      When asking {cf.key}, prefer AskUserQuestion (multi-choice card UI) "
+            f"with these options: [{opts}]. Always offer \"Other\" as a free-text escape."
+        )
+    return (
+        f"  - {cf.key}: {cf.question}\n"
+        f"      Ask {cf.key} as plain text — too varied for multi-choice."
+    )
+
+
 def render_brief(
     *,
     family_label: str,
     brief: str,
     slug_hint: str,
     references: Optional[list[str]],
-    clarifying_fields: list[tuple[str, str]],
+    clarifying_fields: list[ClarifyingField],
     family_contract_notes: str,
     defaults: dict[str, str],
     sanity_check_items: list[str],
@@ -64,7 +112,7 @@ def render_brief(
     if references:
         ref_block = "References:\n" + "\n".join(f"  - {r}" for r in references) + "\n\n"
 
-    field_lines = "\n".join(f"  - {k}: {q}" for k, q in clarifying_fields)
+    field_lines = "\n".join(_render_field_line(cf) for cf in clarifying_fields)
     defaults_lines = "\n".join(f"  - {k}: {v}" for k, v in defaults.items())
     sanity_line = " · ".join(sanity_check_items)
 
@@ -78,6 +126,7 @@ User's opening brief:
 {ref_block}Six steps, in order. No HTML before the user has approved a written outline.
 
 STEP 1 — Acknowledge, parse, run the intake.
+For fields with suggested_options, prefer the AskUserQuestion tool (claude.ai's native multi-choice card UI). For free-form fields, use plain text questions. Don't bundle multiple fields into one question — one at a time.
 (a) One warm sentence. No gushing.
 (b) Parse the brief vs the fields below. Echo back filled fields as ✅, missing as ❓. Exact format:
 ```

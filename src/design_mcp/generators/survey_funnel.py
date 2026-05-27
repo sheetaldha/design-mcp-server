@@ -40,7 +40,7 @@ from ..manifest import (
     SurveyFunnelManifest,
     ThemeTokens,
 )
-from ._brief_template import SURVEY_FUNNEL_DEFAULTS, render_brief
+from ._brief_template import SURVEY_FUNNEL_DEFAULTS, ClarifyingField, field, render_brief
 
 log = logging.getLogger(__name__)
 
@@ -74,14 +74,62 @@ def make_design_brief(
     }
 
 
-_CLARIFYING_FIELDS: list[tuple[str, str]] = [
-    ("audience", "Who is the funnel qualifying? (persona, situation, decision)"),
-    ("site_name", "Brand / site name to append after the page title (e.g. \"SolarQuotes\")? Derive from the brief if obvious; otherwise ask."),
-    ("steps", "How many steps (1 to 5) and what does each ask? Default: 3 (situation, timeframe, contact details)."),
-    ("otp", "OTP / SMS verification before submit — yes or skip?"),
-    ("submit_label", "Final submit button label? (e.g. \"Get My Quotes\", \"See My Match\")"),
-    ("post_submit", "After submit — thank-you on the same page, redirect, or both?"),
-    ("palette", "Brand colours, tone (friendly / professional / playful / authoritative), styles to avoid?"),
+_CLARIFYING_FIELDS: list[ClarifyingField] = [
+    field(
+        "vertical",
+        "What vertical is this funnel qualifying for?",
+        "Health insurance",
+        "Solar / energy",
+        "Finance / loans",
+        "Insurance (general)",
+        "Property",
+        "Telco",
+        "Other",
+    ),
+    field("audience", "Who is the funnel qualifying? (persona, situation, decision)"),
+    field(
+        "site_name",
+        "Brand / site name to append after the page title (e.g. \"SolarQuotes\")? Derive from the brief if obvious; otherwise ask.",
+    ),
+    field(
+        "steps",
+        "How many steps (1 to 5) and what does each ask? Default: 3 (situation, timeframe, contact details).",
+        "1 step (contact only)",
+        "2 steps (qualifier + contact)",
+        "3 steps (situation + timeframe + contact)",
+        "4 steps (multi-qualifier)",
+        "5 steps",
+    ),
+    field(
+        "otp",
+        "OTP / SMS verification before submit — yes or skip?",
+        "Yes, include OTP",
+        "Skip OTP",
+    ),
+    field(
+        "submit_label",
+        "Final submit button label? (e.g. \"Get My Quotes\", \"See My Match\")",
+        "Get my quotes",
+        "See my match",
+        "Apply now",
+        "Get my report",
+    ),
+    field(
+        "post_submit",
+        "After submit — thank-you on the same page, redirect, or both?",
+        "Thank-you on same page",
+        "Redirect to external URL",
+        "Both (thank-you then redirect)",
+    ),
+    field("palette", "Brand colours, tone (friendly / professional / playful / authoritative), styles to avoid?"),
+    field(
+        "tone",
+        "Tone — friendly + casual, professional + clinical, playful, or authoritative?",
+        "Friendly + casual",
+        "Professional + clinical",
+        "Playful + bold",
+        "Authoritative + premium",
+    ),
 ]
 
 _CONTRACT_NOTES = (
