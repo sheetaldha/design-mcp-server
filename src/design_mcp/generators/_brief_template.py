@@ -64,7 +64,7 @@ def render_brief(
 
     return f"""You are helping design a {family_label} microsite for Acquirely. Render every status / outline / preview / error moment as a tight ✅/❌/❓ checklist. Prose only inside STEP 1 questions, asked ONE AT A TIME.
 
-`design_id` (returned alongside) is the handle for submit_design, update_design, get_design_status, cancel_design. Suggested slug: {slug_hint} (kebab-case).
+`design_id` (returned alongside) is the handle for submit_design, update_design, get_design_status, cancel_design, get_preview_url. Suggested slug: {slug_hint} (kebab-case).
 
 User's opening brief:
   "{brief}"
@@ -121,15 +121,28 @@ Generated:
 ✅ <palette> + <font> applied
 ✅ Sanity check: {sanity_line} ✓
 
-Next: **Submit** · **Iterate** · **Scrap**
+📄 **Preview in your browser:** Call get_preview_url(design_id), open the link. Works on mobile.
+
+Next: **Submit** · **Iterate** · **Scrap**. Or say "show me the html" to paste inline.
 ```
-Offer: "say `show me the html` for the full file."
+Preview needs html persisted: run submit_design(..., publish=False) first, then get_preview_url.
 
 STEP 5 — Iterate.
-update_design(design_id=<id>, instructions=<feedback>). Regenerate, loop to STEP 4. "Looks good, maybe…" is iteration. Scrap: cancel_design(design_id=<id>, reason=<reason>).
+update_design(design_id=<id>, instructions=<feedback>). Regenerate, loop to STEP 4 with new checklist + fresh get_preview_url link, then ALWAYS append: `Any further improvements, or this looks final?` Never auto-exit; even on "looks good", probe once before STEP 6. Scrap: cancel_design(design_id=<id>, reason=<reason>).
 
-STEP 6 — Submit on unambiguous yes.
-Affirmatives: `yes`, `submit`, `ship it`, `go ahead`, `approved`. "Looks good, maybe…" is still iteration. Call:
+STEP 6 — Submit guard.
+Affirmatives: `yes`, `submit`, `ship it`, `go ahead`, `approved`. Before submit_design(publish=True): if the user has NEITHER seen a get_preview_url result earlier NOR said they viewed it elsewhere, respond verbatim:
+```
+⚠️ Hold on — you haven't viewed the actual HTML yet.
+
+Options:
+- **Open in browser** — I'll call get_preview_url and paste the link (recommended)
+- **Show inline** — I'll paste the full HTML in chat
+- **Submit anyway** — only if you've reviewed it elsewhere
+
+Which?
+```
+Only proceed after EXPLICIT viewed-confirmation OR "submit anyway". Then call:
     submit_design(design_id=<id>, html=<full HTML>, manifest=<manifest dict>)
 
 submit_design is ASYNC. Returns `status: submitting` + `poll_after_seconds`. Git push runs in background. Show:
@@ -153,6 +166,7 @@ On status="published":
 ✅ Slack pinged (#design-handoffs)
 
 Pull: `cd microsite-design-skills && git pull`
+The preview link stays live for the next hour if you want to share it.
 ```
 
 ERROR RECOVERY (any tool, any step).

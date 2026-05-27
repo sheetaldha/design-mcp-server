@@ -9,10 +9,12 @@ microsite-design-skills repo, and tracks lifecycle in a draft store.
 Tools exposed:
     design_ping            — health check
     design_landing_page    — kick off a landing-page draft (returns brief)
+    design_survey_funnel   — kick off a survey-funnel draft (returns brief)
     submit_design          — validate + commit a completed design
     update_design          — issue iteration instructions for a draft
     get_design_status      — inspect a draft
     cancel_design          — void a draft (records audit trail)
+    get_preview_url        — signed URL to open the generated HTML in a browser
 
 Day 5 will switch from stdio to HTTP/SSE for claude.ai web access.
 """
@@ -48,6 +50,11 @@ from .oauth_provider import (
     issue_csrf_token,
     render_login_form,
     verify_oauth_state,
+)
+from .preview import (
+    DEFAULT_TTL_SECONDS as _PREVIEW_TTL_SECONDS,
+    signed_preview_url,
+    verify_preview_signature,
 )
 from .repo import publish_design
 from .token_verifier import DESIGN_WRITE_SCOPE
@@ -278,6 +285,80 @@ async def authorize_login(request: Request) -> Response:
         url=f"{payload['redirect_uri']}{sep}{urlencode(qp)}",
         status_code=302,
         headers=dict(_NO_CACHE_HEADERS),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /preview/{design_id} — signed-URL HTML preview so users (especially on
+# mobile) can open the generated page in a real browser before approving
+# submit_design. Auth is the HMAC signature on the URL — no bearer token,
+# no cookie, no DB-backed session. See design_mcp.preview for the format.
+# ---------------------------------------------------------------------------
+
+_PREVIEW_NO_INDEX_HEADERS = {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
+def _preview_error_html(title: str, body: str, status_code: int) -> HTMLResponse:
+    html = (
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        f"<title>{title}</title>"
+        "<style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+        "max-width:480px;margin:64px auto;padding:0 24px;color:#1d2026;}"
+        "h1{font-size:20px;margin:0 0 12px;}"
+        "p{color:#5f6b7a;font-size:14px;line-height:1.5;}</style>"
+        f"</head><body><h1>{title}</h1><p>{body}</p></body></html>"
+    )
+    return HTMLResponse(
+        html, status_code=status_code, headers=dict(_PREVIEW_NO_INDEX_HEADERS),
+    )
+
+
+@mcp.custom_route("/preview/{design_id}", methods=["GET"])
+async def preview_design(request: Request) -> Response:
+    design_id = request.path_params.get("design_id", "")
+    exp_raw = request.query_params.get("exp", "")
+    sig = request.query_params.get("sig", "")
+    try:
+        exp_int = int(exp_raw)
+    except (TypeError, ValueError):
+        return _preview_error_html(
+            "Preview link expired or invalid",
+            "This preview link is malformed. Ask the chat session to mint a fresh one with get_preview_url.",
+            status_code=403,
+        )
+
+    pair = await asyncio.to_thread(drafts.get_draft_html, design_id)
+    if pair is None:
+        # Either no such draft, or the draft has no html yet. Surface 404 in
+        # the latter case; we deliberately don't distinguish the two to avoid
+        # confirming the existence of a design_id to an unauthenticated caller.
+        # Either way we still must check the signature so a brute-force
+        # design_id probe doesn't get a free oracle — verify with an empty
+        # user_email (always fails) to keep timing similar.
+        verify_preview_signature(design_id, exp_int, sig, user_email="")
+        return _preview_error_html(
+            "Design has no HTML yet",
+            "submit_design hasn't been called on this draft, or the design_id is unknown.",
+            status_code=404,
+        )
+
+    html, user_email = pair
+    if not verify_preview_signature(design_id, exp_int, sig, user_email=user_email):
+        return _preview_error_html(
+            "Preview link expired or invalid",
+            "This preview link has expired or its signature did not verify. "
+            "Ask the chat session to mint a fresh one with get_preview_url.",
+            status_code=403,
+        )
+
+    return Response(
+        content=html,
+        media_type="text/html; charset=utf-8",
+        headers=dict(_PREVIEW_NO_INDEX_HEADERS),
     )
 
 
@@ -916,6 +997,66 @@ def cancel_design(design_id: str, reason: Optional[str] = None) -> dict:
         "design_id": design_id,
         "status": "cancelled",
         "reason": reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# get_preview_url — signed link to open the generated HTML in a browser
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def get_preview_url(design_id: str) -> dict:
+    """Return a signed, time-limited URL that renders the draft HTML in a browser.
+
+    The link works on any device (desktop or mobile) without an MCP client —
+    handy when the user wants to actually see the page before approving
+    submit_design. The URL contains an HMAC over (design_id, user_email,
+    exp) so a tampered link fails closed.
+
+    Args:
+        design_id: an existing draft id owned by the current user
+
+    Returns:
+        On found: {ok: True, url, expires_at (ISO), ttl_seconds, note}
+        On not-found: {ok: False, design_id, errors: [...]}
+        On no-html-yet: {ok: False, design_id, errors: [...], hint}
+    """
+    from datetime import datetime, timedelta, timezone
+
+    user_email = resolve_user_email()
+    record = drafts.get(design_id, user_email)
+    if record is None:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                f"design_id {design_id!r} not found or not owned by this user."
+            ],
+        }
+    if not record.html:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": ["draft has no html yet — submit_design hasn't been called"],
+            "hint": (
+                "Generate the HTML + manifest first, then call "
+                "submit_design(publish=False) to persist it, then retry get_preview_url."
+            ),
+        }
+
+    ttl = _PREVIEW_TTL_SECONDS
+    url = signed_preview_url(design_id, user_email, ttl_seconds=ttl)
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl)
+    return {
+        "ok": True,
+        "design_id": design_id,
+        "url": url,
+        "expires_at": expires_at.isoformat(),
+        "ttl_seconds": ttl,
+        "note": (
+            "Open this in any browser — works on mobile. "
+            "Link expires in 1 hour."
+        ),
     }
 
 

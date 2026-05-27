@@ -54,7 +54,8 @@ _CONTRACT_NOTES = (
     "(CSS variables in :root plus /tokens.css), exactly one <h1> in the hero, exactly three feature cards "
     "in the manifest, hero LCP image with fetchpriority=\"high\" loading=\"eager\", every other <img> with "
     "loading=\"lazy\" plus width, height and non-empty alt. Lead form posts to /api/handle_Client_Lead_Submission. "
-    "Font from the contract's font_allowlist."
+    "Font from the contract's font_allowlist. "
+    "Tools available to the caller: submit_design, update_design, get_design_status, cancel_design, get_preview_url."
 )
 
 _SANITY_CHECK_ITEMS = [

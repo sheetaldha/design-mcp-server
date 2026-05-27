@@ -439,6 +439,23 @@ def cleanup_expired() -> int:
     return flipped
 
 
+def get_draft_html(design_id: str) -> Optional[tuple[str, str]]:
+    """Return ``(html, user_email)`` for a draft, bypassing user-scope checks.
+
+    Intended ONLY for the signed-URL preview route in ``server.py``: the
+    signature itself is the authorisation, so the route doesn't have a
+    bearer token / context user to compare against. Every other code path
+    MUST go through ``get(design_id, user_email)``.
+
+    Returns ``None`` when the design_id is unknown OR when the draft has
+    no html column yet (i.e. ``submit_design`` hasn't been called).
+    """
+    record = _backend.select_by_id(design_id)
+    if record is None or not record.html:
+        return None
+    return record.html, record.user_email
+
+
 def _reset_for_tests() -> None:
     """Test-only: install a fresh in-memory backend."""
     set_backend(_InMemoryBackend())

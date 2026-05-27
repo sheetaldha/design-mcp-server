@@ -90,7 +90,8 @@ _CONTRACT_NOTES = (
     "If otp_enabled, render <section class=\"otp\" hidden> between the final fieldset and submit, Send-code button posts "
     "to /api/verificationsms. Final submit posts to /api/handle_Client_Lead_Submission. Every <img>: src, alt, width, "
     "height; hero gets fetchpriority=\"high\" loading=\"eager\", others loading=\"lazy\". radio/select/checkbox need "
-    "options (min 2); text/email/tel forbid options."
+    "options (min 2); text/email/tel forbid options. "
+    "Tools available to the caller: submit_design, update_design, get_design_status, cancel_design, get_preview_url."
 )
 
 _SANITY_CHECK_ITEMS = [

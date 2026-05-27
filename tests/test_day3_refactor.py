@@ -493,6 +493,11 @@ _SHARED_REQUIRED_PHRASES = [
     "Diagnose",
     "Scrap",
     "⚠️",
+    "get_preview_url",
+    "Preview in your browser",
+    "haven't viewed the actual HTML yet",
+    "Submit anyway",
+    "Any further improvements",
 ]
 
 
@@ -555,10 +560,10 @@ class TestInstructionsUX:
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_under_word_budget(self, family):
         text = _instructions_for(family, "anything")
-        # Checklist-default UX adds the polling + error-recovery blocks;
-        # hard ceiling 900 words.
+        # Checklist-default UX + view-before-submit guard + iteration probe.
+        # Hard ceiling 1000 words (bumped from 900 in the UX guard pass).
         word_count = len(text.split())
-        assert word_count <= 900, f"[{family}] instructions are {word_count} words; ceiling 900"
+        assert word_count <= 1000, f"[{family}] instructions are {word_count} words; ceiling 1000"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
