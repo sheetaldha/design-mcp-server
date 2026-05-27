@@ -23,8 +23,12 @@ from typing import Any, Optional, Protocol
 
 from .db import get_conn
 
-VALID_STATUSES = {"drafted", "submitted", "published", "cancelled", "expired"}
+VALID_STATUSES = {"drafted", "submitting", "submitted", "published", "failed", "cancelled", "expired"}
 DEFAULT_TTL = timedelta(hours=24)
+
+# Hard cap on persisted last_error length — avoid bloating the row with
+# multi-megabyte tracebacks. Truncation happens in set_last_error.
+LAST_ERROR_MAX_CHARS = 2000
 
 
 @dataclass
@@ -355,6 +359,28 @@ def set_status(design_id: str, user_email: str, status: str) -> None:
             f"invalid status {status!r}; must be one of {sorted(VALID_STATUSES)}"
         )
     update(design_id, user_email, status=status)
+
+
+def set_last_error(design_id: str, user_email: str, error: Optional[str]) -> None:
+    """Persist (or clear, when ``error`` is None) the ``last_error`` field.
+
+    Truncates to LAST_ERROR_MAX_CHARS to keep the row bounded. Idempotent:
+    if the stored value already equals the (truncated) incoming value, this
+    is a no-op and the iteration_log is not extended.
+    """
+    record = get(design_id, user_email)
+    if record is None:
+        raise KeyError(
+            f"design_id {design_id!r} not found or not owned by this user"
+        )
+    truncated: Optional[str]
+    if error is None:
+        truncated = None
+    else:
+        truncated = error if len(error) <= LAST_ERROR_MAX_CHARS else error[:LAST_ERROR_MAX_CHARS]
+    if record.last_error == truncated:
+        return
+    update(design_id, user_email, last_error=truncated)
 
 
 def record_submission(

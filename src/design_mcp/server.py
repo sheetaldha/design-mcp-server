@@ -19,8 +19,10 @@ Day 5 will switch from stdio to HTTP/SSE for claude.ai web access.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
+import traceback
 from typing import Any, Optional
 
 import yaml
@@ -538,17 +540,71 @@ def _html_sanity_check(html: str) -> list[str]:
     return issues
 
 
+async def _background_publish(
+    design_id: str,
+    user_email: str,
+    slug: str,
+    html: str,
+    manifest_yaml: str,
+    chat_summary: str,
+) -> None:
+    """Run publish_design off the event loop, then mark the draft published or failed.
+
+    MUST NEVER let an exception escape into the asyncio loop unhandled — every
+    failure path catches, logs the traceback, and persists status=failed +
+    last_error so the caller can recover via get_design_status.
+    """
+    try:
+        cfg = DesignConfig.from_env()
+        design_dir, sha = await asyncio.to_thread(
+            publish_design,
+            cfg=cfg,
+            slug=slug,
+            html=html,
+            manifest_yaml=manifest_yaml,
+            chat_summary=chat_summary,
+            user_email=user_email,
+        )
+        drafts.mark_published(design_id, user_email, repo_sha=sha, design_dir=str(design_dir))
+        log.info(
+            "submit_design background publish OK: design_id=%s sha=%s dir=%s",
+            design_id, sha, design_dir,
+        )
+    except Exception as exc:  # noqa: BLE001 — boundary, must swallow
+        log.error(
+            "submit_design background publish FAILED: design_id=%s err=%s\n%s",
+            design_id, exc, traceback.format_exc(),
+        )
+        try:
+            drafts.set_status(design_id, user_email, "failed")
+            drafts.set_last_error(design_id, user_email, str(exc))
+        except Exception:  # noqa: BLE001 — last-resort guard
+            log.exception(
+                "submit_design background publish: failed to record failure for design_id=%s",
+                design_id,
+            )
+
+
 @mcp.tool()
-def submit_design(
+async def submit_design(
     design_id: str,
     html: str,
     manifest: dict,
     publish: bool = True,
 ) -> dict:
-    """Validate and (optionally) commit a generated design.
+    """Validate and (optionally) commit a generated design — git push runs async.
 
     The git commit author is derived from the authenticated user — the
     caller cannot spoof attribution.
+
+    Async contract:
+      - When publish=True the manifest + HTML are validated SYNCHRONOUSLY,
+        persisted to the draft row, status flips to "submitting", and the
+        git clone/pull/commit/push runs in a background task. This call
+        returns immediately (typically <200ms) so the caller's chat session
+        does not block on git.
+      - When publish=False the manifest + HTML are validated, persisted,
+        and the status flips straight to "submitted" with no background work.
 
     Args:
         design_id: the id returned by design_landing_page / design_survey_funnel
@@ -557,9 +613,11 @@ def submit_design(
         publish: when True (default) write + commit + push to microsite-design-skills
 
     Returns:
-        On success: {ok: True, design_id, slug, family, status, html_size,
-                     committed: bool, design_dir?, commit_sha?, manifest}
-        On failure: {ok: False, design_id, errors: [...], status}
+        On accepted: {ok: True, design_id, slug, family, status: "submitting"|"submitted",
+                      manifest_valid: True, html_size, manifest, message,
+                      poll_after_seconds: int}
+        On validation failure: {ok: False, design_id, errors: [...], status}
+        On not-found: {ok: False, design_id, errors: [...], status: "not-found"}
     """
     user_email = resolve_user_email()
     record = drafts.get(design_id, user_email)
@@ -583,33 +641,47 @@ def submit_design(
 
     errors: list[str] = []
 
-    # 1. Manifest validation via the family's Pydantic model.
+    # 1. Manifest validation via the family's Pydantic model — SYNC, fast.
     try:
         manifest_cls = _manifest_class_for(record.family)
     except ValueError as exc:
         return {"ok": False, "design_id": design_id, "errors": [str(exc)], "status": record.status}
 
+    manifest_obj = None
     try:
         manifest_obj = manifest_cls(**manifest)
     except Exception as exc:  # Pydantic ValidationError + anything else
         errors.append(f"manifest validation failed: {exc}")
 
-    # 2. HTML structural sanity.
+    # 2. HTML structural sanity — SYNC, fast.
     errors.extend(_html_sanity_check(html))
 
-    if errors:
-        drafts.update(design_id, user_email, last_error="; ".join(errors))
+    if errors or manifest_obj is None:
+        drafts.set_last_error(design_id, user_email, "; ".join(errors))
         return {
             "ok": False,
             "design_id": design_id,
             "errors": errors,
             "status": record.status,
+            "manifest_valid": False,
             "hint": "Fix the issues above and call submit_design again with the corrected html + manifest.",
         }
 
     manifest_dict = manifest_obj.model_dump(mode="json")
     slug = manifest_dict.get("slug") or record.slug_hint or "untitled"
     chat_summary = _build_chat_summary(record.brief, slug, record.family, manifest_dict)
+
+    # 3. Persist the validated payload. record_submission flips status to
+    #    "submitted"; for publish=True we then re-flip to "submitting" so the
+    #    caller sees the right state until the background task lands it.
+    drafts.record_submission(
+        design_id,
+        user_email,
+        html=html,
+        manifest=manifest_dict,
+        chat_summary=chat_summary,
+        slug=slug,
+    )
 
     result: dict[str, Any] = {
         "ok": True,
@@ -618,51 +690,38 @@ def submit_design(
         "family": record.family,
         "html_size": len(html),
         "manifest": manifest_dict,
-        "committed": False,
+        "manifest_valid": True,
     }
 
     if publish:
-        cfg = DesignConfig.from_env()
+        drafts.set_status(design_id, user_email, "submitting")
         manifest_yaml = yaml.dump(manifest_dict, sort_keys=False, default_flow_style=False)
-        design_dir, sha = publish_design(
-            cfg=cfg,
-            slug=slug,
-            html=html,
-            manifest_yaml=manifest_yaml,
-            chat_summary=chat_summary,
-            user_email=user_email,
-        )
-        drafts.update(
-            design_id,
-            user_email,
-            status="published",
-            slug=slug,
-            html=html,
-            manifest=manifest_dict,
-            chat_summary=chat_summary,
-            commit_sha=sha,
-            published_repo_sha=sha,
-            design_dir=str(design_dir),
-            last_error=None,
+        # Fire-and-forget: background task records its own success / failure.
+        asyncio.create_task(
+            _background_publish(
+                design_id=design_id,
+                user_email=user_email,
+                slug=slug,
+                html=html,
+                manifest_yaml=manifest_yaml,
+                chat_summary=chat_summary,
+            )
         )
         result.update(
-            committed=True,
-            design_dir=str(design_dir),
-            commit_sha=sha,
-            status="published",
+            status="submitting",
+            message=(
+                "Submission accepted. The git push runs in the background — "
+                f"call get_design_status('{design_id}') to check progress "
+                "(typically 5-30 seconds)."
+            ),
+            poll_after_seconds=3,
         )
     else:
-        drafts.update(
-            design_id,
-            user_email,
+        result.update(
             status="submitted",
-            slug=slug,
-            html=html,
-            manifest=manifest_dict,
-            chat_summary=chat_summary,
-            last_error=None,
+            message="Validated and persisted; publish=False so no git push was scheduled.",
+            poll_after_seconds=0,
         )
-        result["status"] = "submitted"
 
     return result
 
@@ -746,7 +805,25 @@ def update_design(design_id: str, instructions: str) -> dict:
 
 @mcp.tool()
 def get_design_status(design_id: str) -> dict:
-    """Return the full DraftRecord for a design plus a human-readable summary."""
+    """Return the full lifecycle state of a design so the caller can render a checklist.
+
+    Use this to poll after submit_design returns status="submitting", and to
+    diagnose any tool failure (the server-side state, including last_error,
+    is always authoritative).
+
+    Returns:
+        On found: {
+            ok: True,
+            design_id, status, family, slug, user_email,
+            iteration_count, manifest_valid,
+            commit_sha, design_dir, published_repo_sha,
+            last_error,            # str | None — surface verbatim to the user
+            created_at, updated_at, expires_at,  # ISO timestamps
+            record,                # full DraftRecord dict (back-compat)
+            summary,               # human-readable multi-line string
+        }
+        On not-found or wrong user: {ok: False, design_id, errors: [...]}
+    """
     user_email = resolve_user_email()
     record = drafts.get(design_id, user_email)
     if record is None:
@@ -759,6 +836,16 @@ def get_design_status(design_id: str) -> dict:
         }
 
     data = record.to_dict()
+    # manifest_valid: True if a manifest is persisted (it only lands after a
+    # successful Pydantic validation in submit_design); False if status is
+    # "failed" with a manifest-validation error; None otherwise (still drafting).
+    if record.manifest is not None:
+        manifest_valid: Optional[bool] = True
+    elif record.status == "failed" and record.last_error and "manifest" in record.last_error:
+        manifest_valid = False
+    else:
+        manifest_valid = None
+
     summary_lines = [
         f"design {record.design_id}",
         f"  family : {record.family}",
@@ -769,12 +856,27 @@ def get_design_status(design_id: str) -> dict:
     ]
     if record.commit_sha:
         summary_lines.append(f"  commit : {record.commit_sha}")
+    if record.design_dir:
+        summary_lines.append(f"  dir    : {record.design_dir}")
     if record.last_error:
         summary_lines.append(f"  error  : {record.last_error}")
 
     return {
         "ok": True,
         "design_id": record.design_id,
+        "status": record.status,
+        "family": record.family,
+        "slug": record.slug,
+        "user_email": record.user_email,
+        "iteration_count": len(record.iteration_log),
+        "manifest_valid": manifest_valid,
+        "commit_sha": record.commit_sha,
+        "design_dir": record.design_dir,
+        "published_repo_sha": record.published_repo_sha,
+        "last_error": record.last_error,
+        "created_at": record.created_at.isoformat(),
+        "updated_at": record.updated_at.isoformat(),
+        "expires_at": record.expires_at.isoformat(),
         "record": data,
         "summary": "\n".join(summary_lines),
     }

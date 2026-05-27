@@ -3,18 +3,19 @@ auth-derived user_email.
 
 Covers:
 - design_landing_page returns the expected structured brief shape
-- drafts.create / get / update / set_status / cleanup_expired work
+- drafts.create / get / update / set_status / set_last_error / cleanup_expired work
 - Cross-user isolation: user A's design_id is invisible to user B
 - create() persists user_email
 - get() returns None when user_email doesn't match
 - record_submission + mark_published helpers behave
 - submit_design derives user_email from auth context (mocks two users)
-- submit_design validates manifest + HTML and round-trips through a
-  bare git repo (publish=True) without touching the real microsite-design-skills
-- submit_design with publish=False stops at "submitted" status
+- submit_design (publish=True) returns immediately with status="submitting"
+  and the git push runs in a background task that flips to "published" or
+  "failed" + last_error
+- submit_design with publish=False stops at "submitted" status, no background work
 - submit_design surfaces structured errors when the manifest is invalid
 - update_design returns iteration instructions and reopens the draft
-- get_design_status returns the record + summary
+- get_design_status returns full lifecycle state (including last_error)
 - cancel_design soft-deletes without removing the record
 - cleanup_expired removes only expired rows
 - Restart resilience: re-instantiating the backend with the same store
@@ -24,8 +25,10 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -321,6 +324,63 @@ class TestDrafts:
         assert drafts.get(r2.design_id, DEFAULT_USER).status == "drafted"
         assert drafts.get(r3.design_id, DEFAULT_USER).status == "cancelled"
 
+    def test_set_last_error_round_trip(self):
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="err", slug_hint="err",
+        )
+        drafts.set_last_error(record.design_id, DEFAULT_USER, "boom")
+        assert drafts.get(record.design_id, DEFAULT_USER).last_error == "boom"
+
+    def test_set_last_error_truncates_to_2000_chars(self):
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="trunc", slug_hint="trunc",
+        )
+        big = "x" * 5000
+        drafts.set_last_error(record.design_id, DEFAULT_USER, big)
+        stored = drafts.get(record.design_id, DEFAULT_USER).last_error
+        assert stored is not None
+        assert len(stored) == 2000
+
+    def test_set_last_error_none_clears(self):
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="clear", slug_hint="clear",
+        )
+        drafts.set_last_error(record.design_id, DEFAULT_USER, "oops")
+        drafts.set_last_error(record.design_id, DEFAULT_USER, None)
+        assert drafts.get(record.design_id, DEFAULT_USER).last_error is None
+
+    def test_set_last_error_is_idempotent(self):
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="idem", slug_hint="idem",
+        )
+        drafts.set_last_error(record.design_id, DEFAULT_USER, "same")
+        log_len_before = len(drafts.get(record.design_id, DEFAULT_USER).iteration_log)
+        drafts.set_last_error(record.design_id, DEFAULT_USER, "same")
+        log_len_after = len(drafts.get(record.design_id, DEFAULT_USER).iteration_log)
+        assert log_len_before == log_len_after  # second call must not append
+
+    def test_set_last_error_cross_user_blocked(self):
+        record = drafts.create(
+            user_email="alice@x.com", family="landing-page",
+            brief="x", slug_hint="x",
+        )
+        with pytest.raises(KeyError):
+            drafts.set_last_error(record.design_id, "bob@x.com", "pwn")
+
+    def test_submitting_and_failed_are_valid_statuses(self):
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="x", slug_hint="x",
+        )
+        drafts.set_status(record.design_id, DEFAULT_USER, "submitting")
+        assert drafts.get(record.design_id, DEFAULT_USER).status == "submitting"
+        drafts.set_status(record.design_id, DEFAULT_USER, "failed")
+        assert drafts.get(record.design_id, DEFAULT_USER).status == "failed"
+
     def test_restart_resilience_via_shared_backend(self):
         """Simulate a PM2 restart: same underlying storage, fresh module-level
         backend instance, previously-created drafts still readable."""
@@ -402,16 +462,15 @@ class TestDesignLandingPage:
 
 # Phrases every family's instructions must surface so the caller's chat
 # walks the user through ask -> outline -> generate -> preview -> iterate -> submit.
-# Updated for the adaptive step-wise intake (Day-3 UX refresh).
+# Updated for the checklist-default UX with auto-error-recovery.
 _SHARED_REQUIRED_PHRASES = [
     "outline",
-    "wait for",
     "submit_design",
     "update_design",
     "cancel_design",
     "<title>",
     "70 char",
-    "Submit · Iterate · Scrap",
+    "Next: **Submit** · **Iterate** · **Scrap**",
     "show me the html",
     "Acknowledge",
     "one at a time",
@@ -420,6 +479,20 @@ _SHARED_REQUIRED_PHRASES = [
     "just generate it",
     "Sanity check",
     "Echo back",
+    "From your brief:",
+    "✅",
+    "❓",
+    "❌",
+    "*Q",
+    "Generated:",
+    "Outline (review before HTML)",
+    "get_design_status",
+    "poll_after_seconds",
+    "Options:",
+    "Retry",
+    "Diagnose",
+    "Scrap",
+    "⚠️",
 ]
 
 
@@ -482,9 +555,10 @@ class TestInstructionsUX:
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_under_word_budget(self, family):
         text = _instructions_for(family, "anything")
-        # Soft budget per the spec — aim ~800 words, never past 850.
+        # Checklist-default UX adds the polling + error-recovery blocks;
+        # hard ceiling 900 words.
         word_count = len(text.split())
-        assert word_count <= 850, f"[{family}] instructions are {word_count} words; budget ~800"
+        assert word_count <= 900, f"[{family}] instructions are {word_count} words; ceiling 900"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -520,8 +594,8 @@ class TestInstructionsUX:
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_include_tightened_submit_iterate_scrap(self, family):
         text = _instructions_for(family, "anything")
-        assert "Submit · Iterate · Scrap" in text, (
-            f"[{family}] instructions should include the tightened Submit · Iterate · Scrap prompt"
+        assert "Next: **Submit** · **Iterate** · **Scrap**" in text, (
+            f"[{family}] instructions should include the bold Submit · Iterate · Scrap prompt"
         )
 
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
@@ -550,31 +624,137 @@ class TestInstructionsUX:
 # submit_design
 # ---------------------------------------------------------------------------
 
+def _submit(**kwargs):
+    """Helper — submit_design is now async; sync-wrap for the legacy tests."""
+    return asyncio.run(submit_design(**kwargs))
+
+
+def _await_terminal(design_id: str, user_email: str, *, timeout: float = 5.0) -> Any:
+    """Poll the in-memory draft store until status is no longer 'submitting' (or timeout)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        rec = drafts.get(design_id, user_email)
+        if rec is not None and rec.status != "submitting":
+            return rec
+        time.sleep(0.02)
+    return drafts.get(design_id, user_email)
+
+
 class TestSubmitDesign:
-    def test_publish_true_commits_to_temp_repo(self, temp_design_repo):
+    def test_publish_true_returns_submitting_then_publishes(self, temp_design_repo):
         brief_resp = design_landing_page(brief="Test brief for submit")
         design_id = brief_resp["design_id"]
         manifest = _valid_manifest()
         html = _valid_html()
 
-        result = submit_design(
-            design_id=design_id,
-            html=html,
-            manifest=manifest,
-            publish=True,
-        )
-        assert result["ok"] is True, result
-        assert result["committed"] is True
-        assert result["status"] == "published"
-        assert result["slug"] == "test-landing"
-        assert Path(result["design_dir"]).exists()
-        assert (Path(result["design_dir"]) / "test-landing.html").exists()
-        assert (Path(result["design_dir"]) / "page-meta.yaml").exists()
+        async def go():
+            result = await submit_design(
+                design_id=design_id, html=html, manifest=manifest, publish=True,
+            )
+            # Drain the background task created inside submit_design.
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            return result
 
-        # The draft state reflects the publish.
+        result = asyncio.run(go())
+        assert result["ok"] is True, result
+        assert result["manifest_valid"] is True
+        assert result["status"] == "submitting"
+        assert result["poll_after_seconds"] == 3
+        assert result["slug"] == "test-landing"
+        # After awaiting the background task: the draft is published.
         record = drafts.get(design_id, DEFAULT_USER)
         assert record.status == "published"
-        assert record.commit_sha == result["commit_sha"]
+        assert record.commit_sha
+        assert Path(record.design_dir).exists()
+        assert (Path(record.design_dir) / "test-landing.html").exists()
+        assert (Path(record.design_dir) / "page-meta.yaml").exists()
+        assert record.last_error is None
+
+    def test_publish_true_returns_quickly_even_when_publish_blocks(self, temp_design_repo, monkeypatch):
+        """submit_design must return in <200ms even if publish_design takes 5s."""
+
+        def slow_publish(**kw):  # noqa: ARG001
+            time.sleep(5.0)
+            raise RuntimeError("test-injected: should not block the tool response")
+
+        monkeypatch.setattr("design_mcp.server.publish_design", slow_publish)
+
+        brief_resp = design_landing_page(brief="async timing check")
+        design_id = brief_resp["design_id"]
+
+        async def go():
+            t0 = time.monotonic()
+            result = await submit_design(
+                design_id=design_id,
+                html=_valid_html(),
+                manifest=_valid_manifest(),
+                publish=True,
+            )
+            elapsed = time.monotonic() - t0
+            return result, elapsed
+
+        result, elapsed = asyncio.run(go())
+        assert result["status"] == "submitting"
+        assert elapsed < 0.2, f"submit_design blocked the event loop for {elapsed:.3f}s"
+
+    def test_background_task_marks_failed_on_publish_exception(self, temp_design_repo, monkeypatch):
+        """If publish_design raises, the background task sets status=failed + last_error."""
+
+        def boom(**kw):  # noqa: ARG001
+            raise RuntimeError("simulated git push failure")
+
+        monkeypatch.setattr("design_mcp.server.publish_design", boom)
+
+        brief_resp = design_landing_page(brief="failure-path coverage")
+        design_id = brief_resp["design_id"]
+
+        async def go():
+            result = await submit_design(
+                design_id=design_id,
+                html=_valid_html(),
+                manifest=_valid_manifest(),
+                publish=True,
+            )
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            return result
+
+        result = asyncio.run(go())
+        assert result["status"] == "submitting"  # initial accept
+        rec = drafts.get(design_id, DEFAULT_USER)
+        assert rec is not None
+        assert rec.status == "failed"
+        assert rec.last_error and "simulated git push failure" in rec.last_error
+
+    def test_background_task_truncates_huge_last_error(self, temp_design_repo, monkeypatch):
+        huge = "x" * 5000
+
+        def boom(**kw):  # noqa: ARG001
+            raise RuntimeError(huge)
+
+        monkeypatch.setattr("design_mcp.server.publish_design", boom)
+
+        brief_resp = design_landing_page(brief="truncate check")
+        design_id = brief_resp["design_id"]
+
+        async def go():
+            await submit_design(
+                design_id=design_id,
+                html=_valid_html(),
+                manifest=_valid_manifest(),
+                publish=True,
+            )
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(go())
+        rec = drafts.get(design_id, DEFAULT_USER)
+        assert rec.status == "failed"
+        assert len(rec.last_error) <= 2000
 
     def test_publish_uses_authenticated_user_email_for_commit(self, temp_design_repo, monkeypatch):
         """Verify the git commit author is the authenticated user, not a caller-supplied value."""
@@ -590,27 +770,44 @@ class TestSubmitDesign:
 
         brief_resp = design_landing_page(brief="Author check")
         design_id = brief_resp["design_id"]
-        submit_design(
-            design_id=design_id,
-            html=_valid_html(),
-            manifest=_valid_manifest(),
-            publish=True,
-        )
+
+        async def go():
+            await submit_design(
+                design_id=design_id,
+                html=_valid_html(),
+                manifest=_valid_manifest(),
+                publish=True,
+            )
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(go())
         assert captured["user_email"] == DEFAULT_USER
 
-    def test_publish_false_marks_submitted_only(self, temp_design_repo):
+    def test_publish_false_marks_submitted_only_and_skips_background(self, temp_design_repo, monkeypatch):
         brief_resp = design_landing_page(brief="Preview only brief")
         design_id = brief_resp["design_id"]
 
-        result = submit_design(
+        called = {"count": 0}
+
+        def spy(**kw):  # noqa: ARG001
+            called["count"] += 1
+            return (Path("/tmp/never"), "deadbeef")
+
+        monkeypatch.setattr("design_mcp.server.publish_design", spy)
+
+        result = _submit(
             design_id=design_id,
             html=_valid_html(),
             manifest=_valid_manifest(),
             publish=False,
         )
         assert result["ok"] is True
-        assert result["committed"] is False
         assert result["status"] == "submitted"
+        assert result["manifest_valid"] is True
+        assert result["poll_after_seconds"] == 0
+        assert called["count"] == 0  # no background publish at all
         assert drafts.get(design_id, DEFAULT_USER).status == "submitted"
 
     def test_invalid_manifest_returns_structured_errors(self):
@@ -619,13 +816,11 @@ class TestSubmitDesign:
         bad = _valid_manifest()
         # Only 2 features — contract requires exactly 3.
         bad["features"] = bad["features"][:2]
-        result = submit_design(
-            design_id=design_id,
-            html=_valid_html(),
-            manifest=bad,
-            publish=False,
+        result = _submit(
+            design_id=design_id, html=_valid_html(), manifest=bad, publish=False,
         )
         assert result["ok"] is False
+        assert result["manifest_valid"] is False
         assert any("manifest validation failed" in e for e in result["errors"])
         # Draft is still in drafted state — caller can retry.
         assert drafts.get(design_id, DEFAULT_USER).status == "drafted"
@@ -633,7 +828,7 @@ class TestSubmitDesign:
     def test_html_missing_h1_returns_error(self):
         brief_resp = design_landing_page(brief="Missing h1 brief")
         design_id = brief_resp["design_id"]
-        result = submit_design(
+        result = _submit(
             design_id=design_id,
             html="<!doctype html><html><head><title>x</title></head><body>no h1</body></html>",
             manifest=_valid_manifest(),
@@ -643,7 +838,7 @@ class TestSubmitDesign:
         assert any("h1" in e for e in result["errors"])
 
     def test_unknown_design_id_returns_not_found(self):
-        result = submit_design(
+        result = _submit(
             design_id="00000000-0000-0000-0000-000000000000",
             html=_valid_html(),
             manifest=_valid_manifest(),
@@ -662,7 +857,7 @@ class TestSubmitDesign:
 
         # Bob attempts to submit_design against Alice's design_id.
         with _set_user("bob@x.com"):
-            result = submit_design(
+            result = _submit(
                 design_id=design_id,
                 html=_valid_html(),
                 manifest=_valid_manifest(),
@@ -698,6 +893,56 @@ class TestIterationTools:
         assert result["ok"] is True
         assert result["record"]["status"] == "drafted"
         assert "summary" in result and design_id in result["summary"]
+
+    def test_get_design_status_returns_full_lifecycle_shape(self):
+        """Async-submit polling expects status, last_error, commit_sha, design_dir,
+        published_repo_sha, manifest_valid, iteration_count, ISO timestamps."""
+        brief_resp = design_landing_page(brief="Lifecycle shape check")
+        design_id = brief_resp["design_id"]
+        result = get_design_status(design_id)
+        assert result["ok"] is True
+        for key in (
+            "design_id", "status", "family", "slug", "user_email",
+            "iteration_count", "manifest_valid",
+            "commit_sha", "design_dir", "published_repo_sha", "last_error",
+            "created_at", "updated_at", "expires_at",
+        ):
+            assert key in result, f"get_design_status missing key {key!r}"
+        # Sensible defaults for a fresh draft.
+        assert result["status"] == "drafted"
+        assert result["family"] == "landing-page"
+        assert result["last_error"] is None
+        assert result["commit_sha"] is None
+        assert result["design_dir"] is None
+        assert result["published_repo_sha"] is None
+        assert result["manifest_valid"] is None  # no manifest persisted yet
+        assert result["iteration_count"] >= 1   # creation event recorded
+        assert result["user_email"] == DEFAULT_USER
+
+    def test_get_design_status_surfaces_last_error_after_failed_publish(self, temp_design_repo, monkeypatch):
+        def boom(**kw):  # noqa: ARG001
+            raise RuntimeError("repo unreachable")
+        monkeypatch.setattr("design_mcp.server.publish_design", boom)
+
+        brief_resp = design_landing_page(brief="surface last_error")
+        design_id = brief_resp["design_id"]
+
+        async def go():
+            await submit_design(
+                design_id=design_id,
+                html=_valid_html(),
+                manifest=_valid_manifest(),
+                publish=True,
+            )
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(go())
+        result = get_design_status(design_id)
+        assert result["ok"] is True
+        assert result["status"] == "failed"
+        assert result["last_error"] and "repo unreachable" in result["last_error"]
 
     def test_get_design_status_cross_user_returns_not_found(self):
         with _set_user("alice@x.com"):
@@ -741,12 +986,21 @@ class TestIterationTools:
     def test_cancel_after_publish_is_rejected(self, temp_design_repo):
         brief_resp = design_landing_page(brief="Cant cancel after publish")
         design_id = brief_resp["design_id"]
-        submit_design(
-            design_id=design_id,
-            html=_valid_html(),
-            manifest=_valid_manifest(),
-            publish=True,
-        )
+
+        async def go():
+            await submit_design(
+                design_id=design_id,
+                html=_valid_html(),
+                manifest=_valid_manifest(),
+                publish=True,
+            )
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        asyncio.run(go())
+        # Background task should have flipped status to published.
+        assert drafts.get(design_id, DEFAULT_USER).status == "published"
         result = cancel_design(design_id)
         assert result["ok"] is False
         assert result["status"] == "published"
