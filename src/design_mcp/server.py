@@ -15,6 +15,7 @@ Tools exposed:
     get_design_status      — inspect a draft
     cancel_design          — void a draft (records audit trail)
     get_preview_url        — signed URL to open the generated HTML in a browser
+    fetch_url_screenshots  — multi-provider screenshot of an external URL (3 viewports)
 
 Day 5 will switch from stdio to HTTP/SSE for claude.ai web access.
 """
@@ -57,6 +58,7 @@ from .preview import (
     verify_preview_signature,
 )
 from .repo import publish_design
+from .screenshots import ScreenshotError, fetch_screenshots
 from .token_verifier import DESIGN_WRITE_SCOPE
 
 logging.basicConfig(
@@ -1057,6 +1059,59 @@ def get_preview_url(design_id: str) -> dict:
             "Open this in any browser — works on mobile. "
             "Link expires in 1 hour."
         ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# fetch_url_screenshots — multimodal context for "Enhancement" / "Replica"
+# landing-page intents. Takes 3 screenshots (mobile / iPad / desktop) of an
+# external URL via a multi-provider orchestrator and returns the image URLs
+# so the caller's Claude can read them with its multimodal vision.
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+async def fetch_url_screenshots(url: str) -> dict:
+    """Take screenshots of an external URL at mobile, iPad, and desktop viewports.
+
+    Use this when the user picks "Enhancement to an existing landing page" or
+    "Replica of an existing landing page" and provides a URL. Returns 3 image
+    URLs you can read via your multimodal vision so you have visual context
+    for the design work.
+
+    The first matching provider (Microlink → ApiFlash → ScreenshotMachine)
+    wins per viewport. Results are cached for 24h per URL so repeat calls
+    inside the cache window do no HTTP at all.
+
+    Args:
+        url: HTTP/HTTPS URL of the page to screenshot. Internal / private
+             / loopback IPs and non-http(s) schemes are blocked (SSRF guard).
+
+    Returns:
+        {
+            "url": <input url>,
+            "mobile":  {"url": "...", "viewport": "390x844",  "provider": "..."},
+            "ipad":    {"url": "...", "viewport": "820x1180", "provider": "..."},
+            "desktop": {"url": "...", "viewport": "1440x900", "provider": "..."},
+            "cached":  <bool — True if served from the 24h cache>,
+        }
+    """
+    user_email = resolve_user_email()
+    log.info("fetch_url_screenshots user=%s url=%s", user_email, url)
+
+    try:
+        results = await fetch_screenshots(url)
+    except ValueError as exc:
+        # URL validation failure (SSRF / bad scheme / non-resolving host)
+        raise ValueError(f"URL invalid: {exc}") from exc
+    except ScreenshotError as exc:
+        raise RuntimeError(f"All screenshot providers failed: {exc}") from exc
+
+    return {
+        "url": url,
+        "mobile":  {"url": results["mobile"].url,  "viewport": "390x844",  "provider": results["mobile"].provider},
+        "ipad":    {"url": results["ipad"].url,    "viewport": "820x1180", "provider": results["ipad"].provider},
+        "desktop": {"url": results["desktop"].url, "viewport": "1440x900", "provider": results["desktop"].provider},
+        "cached":  results["mobile"].cached,
     }
 
 

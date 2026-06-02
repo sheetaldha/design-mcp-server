@@ -41,44 +41,67 @@ def _load_contract() -> dict[str, Any]:
 
 
 _CLARIFYING_FIELDS: list[ClarifyingField] = [
+    # 1. Page intent — scope-based routing (new microsite / enhancement / replica)
     field(
         "page_intent",
-        "What is this landing page for?",
-        "An Acquirely product/service",
-        "A client / external brand",
-        "Lead-gen / waitlist",
-        "Internal tool / utility",
+        "What kind of work is this?",
+        "New microsite landing page",
+        "Enhancement to an existing landing page",
+        "Replica of an existing landing page",
     ),
-    field("audience", "Who is this page for? (persona, situation, pain point)"),
+    # 2. Brand / site name
     field(
         "site_name",
         "Brand / site name to append after the page title (e.g. \"HealthBoost\")? Derive from the brief if obvious; otherwise ask.",
     ),
+    # 3. Site brief — front-loaded for the brief-first / skip-answered pattern
+    field(
+        "site_brief",
+        "Upload or paste your brief — images, copy, wireframes, reference URLs, "
+        "anything. The more you share, the fewer questions I'll ask. I'll skip "
+        "any remaining questions already answered in your brief.",
+    ),
+    # 4. Primary CTA
     field(
         "primary_cta",
-        "What single action should a visitor take? (book a call, request a quote, sign up, download)",
+        "Single action you want a visitor to take?",
         "Book a consultation/demo",
         "Request a quote",
         "Sign up / create account",
         "Download / get the guide",
         "Contact us",
     ),
+    # 5. Review checkpoint — pseudo-field; no data collected
+    field(
+        "review_checkpoint",
+        "Summary of everything collected so far + remaining questions — confirm or change?",
+        is_checkpoint=True,
+    ),
+    # 6. Palette
     field("palette", "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose."),
+    # 7. Benefits
     field("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
+    # 8. Tone
     field(
         "tone",
-        "Tone — friendly + casual, professional + clinical, playful, or authoritative?",
+        "Tone of voice?",
         "Friendly + casual",
         "Professional + clinical",
         "Playful + bold",
         "Authoritative + premium",
     ),
+    # 9. GTM tag
+    field(
+        "gtm_tag",
+        "Google Tag Manager container ID to embed? Paste it (e.g. GTM-XXXXXXX) or skip.",
+    ),
+    # 10. References to avoid
     field("references_to_avoid", "Anything to avoid? (competitor styles, forbidden words, imagery)"),
+    # 11. Optional sections
     field(
         "optional_sections_content",
-        "Want testimonials, FAQ, or trust badges? If so I need 2-6 testimonials "
-        "(quote+author+location), 3-10 FAQs (Q&A), and/or 3-8 trust badges "
-        "(label+detail). Or skip them.",
+        "Testimonials, FAQ, or trust badges? If yes: 2-6 testimonials "
+        "(quote+author+location), 3-10 FAQs (Q&A), 3-8 trust badges (label+detail). Or skip.",
     ),
 ]
 
@@ -97,7 +120,7 @@ _CONTRACT_NOTES = (
     "Optional sections: if `optional_sections` contains 'testimonials'/'faq'/'trust_badges', populate the "
     "matching manifest field (testimonials 2-6, faq 3-10, trust_badges 3-8) and render the HTML FROM that "
     "same data so manifest and HTML match — orphan flag-or-data fails validation. "
-    "Tools available to the caller: submit_design, update_design, get_design_status, cancel_design, get_preview_url."
+    "Tools available to the caller: submit_design, update_design, get_design_status, cancel_design, get_preview_url, fetch_url_screenshots."
 )
 
 # Static items rendered into the brief's STEP-4 sanity-check line.
@@ -153,6 +176,7 @@ def _build_instructions(
         family_contract_notes=_CONTRACT_NOTES,
         defaults=LANDING_PAGE_DEFAULTS,
         sanity_check_items=_SANITY_CHECK_ITEMS,
+        enable_brief_first_branching=True,
     )
 
 

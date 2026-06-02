@@ -598,12 +598,13 @@ class TestInstructionsUX:
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
     def test_instructions_under_word_budget(self, family):
         text = _instructions_for(family, "anything")
-        # Post-addition of per-field suggested_options guidance (each option-bearing
-        # field now spells out the AskUserQuestion option set inline) the briefs
-        # grew to ~1422 (landing) / ~1438 (survey). Ceiling 1500 keeps headroom
-        # for one or two more curated option lists without forcing a trim.
+        # Post-addition of (a) per-field AskUserQuestion option guidance and
+        # (b) the landing-page brief-first scope-routing + skip-answered intake
+        # block + new clarifying fields (site_brief, review_checkpoint, gtm_tag),
+        # the landing brief lands ~1600 words. 1600 keeps a small headroom for
+        # one more curated option list without forcing another trim.
         word_count = len(text.split())
-        assert word_count <= 1500, f"[{family}] instructions are {word_count} words; ceiling 1500"
+        assert word_count <= 1600, f"[{family}] instructions are {word_count} words; ceiling 1600"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -659,8 +660,13 @@ class TestInstructionsUX:
         # Sanity: defaults dicts are non-empty and cover the per-family fields.
         assert isinstance(LANDING_PAGE_DEFAULTS, dict)
         assert isinstance(SURVEY_FUNNEL_DEFAULTS, dict)
-        for k in ("audience", "primary_cta", "palette", "benefits", "tone"):
+        # Landing-page dropped `audience` (covered by the site_brief upload);
+        # added `site_brief`, `gtm_tag`, scope-based `page_intent`.
+        for k in ("page_intent", "site_brief", "gtm_tag", "primary_cta", "palette", "benefits", "tone"):
             assert k in LANDING_PAGE_DEFAULTS, f"Landing Page defaults missing {k!r}"
+        assert "audience" not in LANDING_PAGE_DEFAULTS, (
+            "Landing Page defaults should no longer carry `audience` — the brief upload covers it"
+        )
         for k in ("audience", "steps", "otp", "submit_label", "post_submit", "palette"):
             assert k in SURVEY_FUNNEL_DEFAULTS, f"Survey Funnel defaults missing {k!r}"
 
@@ -1387,11 +1393,10 @@ class TestInstructionsCarryOptionalSectionsGuidance:
 # Curated option lists every brief MUST surface verbatim so the caller can
 # feed them straight into claude.ai's AskUserQuestion multi-choice card UI.
 _LANDING_PAGE_REQUIRED_OPTIONS = [
-    # page_intent
-    "An Acquirely product/service",
-    "A client / external brand",
-    "Lead-gen / waitlist",
-    "Internal tool / utility",
+    # page_intent (scope-based routing — New / Enhancement / Replica)
+    "New microsite landing page",
+    "Enhancement to an existing landing page",
+    "Replica of an existing landing page",
     # primary_cta
     "Book a consultation/demo",
     "Request a quote",
@@ -1473,9 +1478,11 @@ class TestClarifyingFieldShape:
     def test_page_intent_is_first_landing_page_field(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
         assert _CLARIFYING_FIELDS[0].key == "page_intent"
-        # Carries the curated option set.
+        # Carries the curated scope-based option set (New / Enhancement / Replica).
         assert _CLARIFYING_FIELDS[0].suggested_options is not None
-        assert "An Acquirely product/service" in _CLARIFYING_FIELDS[0].suggested_options
+        assert "New microsite landing page" in _CLARIFYING_FIELDS[0].suggested_options
+        assert "Enhancement to an existing landing page" in _CLARIFYING_FIELDS[0].suggested_options
+        assert "Replica of an existing landing page" in _CLARIFYING_FIELDS[0].suggested_options
 
     def test_vertical_is_first_survey_funnel_field(self):
         from design_mcp.generators.survey_funnel import _CLARIFYING_FIELDS
@@ -1488,7 +1495,7 @@ class TestSuggestedOptionsRendered:
     def test_landing_page_brief_carries_page_intent_question(self):
         text = _instructions_for("landing-page", "anything")
         assert "page_intent" in text
-        assert "What is this landing page for?" in text
+        assert "What kind of work is this?" in text
 
     def test_survey_funnel_brief_carries_vertical_question(self):
         text = _instructions_for("survey-funnel", "anything")
@@ -1526,9 +1533,11 @@ class TestSuggestedOptionsRendered:
         )
 
     def test_landing_page_free_form_field_marked_plain_text(self):
-        # `audience` has no suggested_options — should be rendered as plain text.
+        # `palette` has no suggested_options — should be rendered as plain text.
+        # (audience was dropped from landing-page; the site_brief upload covers
+        # persona/audience info now.)
         text = _instructions_for("landing-page", "anything")
-        assert "Ask audience as plain text" in text
+        assert "Ask palette as plain text" in text
 
     def test_survey_funnel_free_form_field_marked_plain_text(self):
         # `audience` has no suggested_options on survey-funnel either.
@@ -1539,8 +1548,105 @@ class TestSuggestedOptionsRendered:
 class TestNewDefaults:
     def test_landing_page_defaults_include_page_intent(self):
         from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
-        assert LANDING_PAGE_DEFAULTS.get("page_intent") == "An Acquirely product/service"
+        assert LANDING_PAGE_DEFAULTS.get("page_intent") == "New microsite landing page"
 
     def test_survey_funnel_defaults_include_vertical(self):
         from design_mcp.generators._brief_template import SURVEY_FUNNEL_DEFAULTS
         assert SURVEY_FUNNEL_DEFAULTS.get("vertical") == "Other"
+
+    def test_landing_page_defaults_include_site_brief(self):
+        from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
+        assert "site_brief" in LANDING_PAGE_DEFAULTS
+
+    def test_landing_page_defaults_include_gtm_tag(self):
+        from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
+        assert "gtm_tag" in LANDING_PAGE_DEFAULTS
+
+    def test_landing_page_defaults_drop_audience(self):
+        from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
+        assert "audience" not in LANDING_PAGE_DEFAULTS
+
+
+# ---------------------------------------------------------------------------
+# Landing-page clarifying-fields rewrite (scope-based page_intent, brief-first
+# intake with site_brief upload, review_checkpoint pseudo-field, gtm_tag,
+# audience dropped).
+# ---------------------------------------------------------------------------
+
+class TestLandingPageClarifyingFieldsRewrite:
+    def test_page_intent_first_question_text_is_scope_based(self):
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        assert _CLARIFYING_FIELDS[0].key == "page_intent"
+        assert _CLARIFYING_FIELDS[0].question == "What kind of work is this?"
+
+    def test_page_intent_has_three_scope_options(self):
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        opts = _CLARIFYING_FIELDS[0].suggested_options
+        assert opts is not None
+        assert list(opts) == [
+            "New microsite landing page",
+            "Enhancement to an existing landing page",
+            "Replica of an existing landing page",
+        ]
+
+    def test_site_brief_is_at_position_3(self):
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        # 1-indexed position-3 == zero-indexed [2]
+        assert _CLARIFYING_FIELDS[2].key == "site_brief"
+        # Free-form upload — no suggested options.
+        assert _CLARIFYING_FIELDS[2].suggested_options is None
+        assert _CLARIFYING_FIELDS[2].is_checkpoint is False
+
+    def test_review_checkpoint_is_at_position_5_and_flagged_is_checkpoint(self):
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        assert _CLARIFYING_FIELDS[4].key == "review_checkpoint"
+        assert _CLARIFYING_FIELDS[4].is_checkpoint is True
+
+    def test_gtm_tag_is_at_position_9(self):
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        assert _CLARIFYING_FIELDS[8].key == "gtm_tag"
+
+    def test_audience_dropped_from_clarifying_fields(self):
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        keys = [cf.key for cf in _CLARIFYING_FIELDS]
+        assert "audience" not in keys, (
+            "Landing-page `audience` field was dropped — the site_brief upload "
+            "now covers persona / audience info."
+        )
+
+    def test_rendered_instructions_mention_page_intent_branching(self):
+        text = _instructions_for("landing-page", "anything")
+        # Each of the three scope-routing branches must be named verbatim.
+        assert "Enhancement to an existing landing page" in text
+        assert "Replica of an existing landing page" in text
+        # The new MCP tool used by the Enhancement / Replica branches must be
+        # referenced so the caller's Claude knows to invoke it.
+        assert "fetch_url_screenshots" in text
+
+    def test_rendered_instructions_mention_brief_first_skip_answered(self):
+        text = _instructions_for("landing-page", "anything")
+        lower = text.lower()
+        assert "brief-first" in lower or "brief first" in lower
+        assert "skip" in lower
+        assert "site_brief" in text  # the field name
+        # Skip-answered language: must say that already-answered fields are skipped.
+        assert "already answered" in lower or "already-answered" in lower
+
+    def test_rendered_instructions_mention_review_checkpoint_rubric(self):
+        text = _instructions_for("landing-page", "anything")
+        assert "review_checkpoint" in text
+        # CHECKPOINT language present.
+        assert "CHECKPOINT" in text
+        # Confirmation rubric phrases.
+        lower = text.lower()
+        assert "looks good" in lower
+        assert "confirm" in lower
+
+    def test_clarifying_field_dataclass_carries_is_checkpoint(self):
+        from design_mcp.generators._brief_template import ClarifyingField, field
+        cf = field("ck", "summary?", is_checkpoint=True)
+        assert isinstance(cf, ClarifyingField)
+        assert cf.is_checkpoint is True
+        # Default remains False.
+        cf2 = field("k", "q?")
+        assert cf2.is_checkpoint is False
