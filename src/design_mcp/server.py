@@ -43,6 +43,7 @@ from .config import DesignConfig, redact_url
 from .db import get_conn
 from .generators import landing_page as landing_gen
 from .generators import survey_funnel as survey_gen
+from . import intake_state_machine as intake_sm
 from .manifest import LandingPageManifest
 from . import oauth_provider as _op
 from .oauth_provider import (
@@ -509,11 +510,15 @@ def design_landing_page(
     references: Optional[list[str]] = None,
     slug: Optional[str] = None,
 ) -> dict:
-    """Start a Landing Page design. Returns a brief the caller's Claude will act on.
+    """Start a Landing Page design. Server-driven clarifying-question flow.
 
-    The caller (claude.ai web/mobile or Claude Code) reads the returned
-    `instructions`, `contract` and `manifest_schema`, generates the HTML +
-    manifest, then calls `submit_design(design_id, html, manifest)`.
+    The response carries a structured `next_question` payload — the caller's
+    Claude renders it VERBATIM (AskUserQuestion or plain text per the
+    payload), then calls `submit_clarifying_answer(design_id, field_key,
+    answer)` to record the reply and fetch the NEXT question. When
+    `next_question` is null the intake is complete and the caller moves on
+    to the outline -> generate -> submit flow described in
+    `instructions_legacy`.
 
     Args:
         brief: what the site sells, target audience, tone, color preferences
@@ -525,12 +530,15 @@ def design_landing_page(
           "design_id": <uuid>,
           "family": "landing-page",
           "status": "drafted",
-          "instructions": <plain-text instructions for the caller's Claude>,
+          "instructions_short": <~80-word directive about the new server-driven flow>,
+          "instructions_legacy": <full prose runbook for outline/generate/submit>,
+          "instructions": <alias for instructions_legacy — kept for back-compat>,
           "contract": <parsed landing_page.yaml>,
           "manifest_schema": <Pydantic JSON schema>,
           "slug_hint": <kebab-case suggestion>,
           "expires_at": <ISO timestamp, 24h from now>,
-          "next_action": "Call submit_design(design_id, html, manifest) when ready.",
+          "next_question": <NextQuestion dict — see intake_state_machine.NextQuestion>,
+          "next_action": <imperative directing the caller to ask next_question + submit>,
         }
     """
     user_email = resolve_user_email()
@@ -586,8 +594,16 @@ def design_survey_funnel(
 
 
 def _entry_response(record, brief_payload: dict) -> dict:
-    """Shared response shape for both design_* entry tools."""
-    return {
+    """Shared response shape for both design_* entry tools.
+
+    Landing-page additionally surfaces the server-driven clarifying state
+    machine's first ``next_question`` payload + a short imperative under
+    ``instructions_short``. The long prose stays available under
+    ``instructions_legacy`` (and the legacy ``instructions`` key) for
+    back-compat with older callers / tests. Survey-funnel keeps the
+    original prose-only response.
+    """
+    response: dict[str, Any] = {
         "design_id": record.design_id,
         "family": record.family,
         "status": record.status,
@@ -601,6 +617,29 @@ def _entry_response(record, brief_payload: dict) -> dict:
             f"submit_design(design_id='{record.design_id}', html=..., manifest=...)."
         ),
     }
+
+    if record.family == "landing-page":
+        field_list = landing_gen.landing_page_field_list()
+        # Fresh draft = empty state. The state machine normalises the missing
+        # keys; we hand it `{}` so we don't repeat the defaults here.
+        first_question = intake_sm.next_question(field_list, {})
+        next_q_payload = first_question.to_dict() if first_question else None
+        response.update(
+            instructions_short=landing_gen.INSTRUCTIONS_SHORT,
+            instructions_legacy=brief_payload["instructions"],
+            next_question=next_q_payload,
+        )
+        if next_q_payload is not None:
+            response["next_action"] = (
+                f"After the user answers, call submit_clarifying_answer("
+                f"design_id='{record.design_id}', "
+                f"field_key='{next_q_payload['field_key']}', "
+                f"answer=<the option string they picked>) to get the next "
+                "question. Loop until next_question is null, then proceed to "
+                "STEP 2 (outline) per instructions_legacy."
+            )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -999,6 +1038,182 @@ def cancel_design(design_id: str, reason: Optional[str] = None) -> dict:
         "design_id": design_id,
         "status": "cancelled",
         "reason": reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# submit_clarifying_answer + get_next_question — server-driven intake state
+# machine (landing-page only for v1; survey-funnel still uses prose).
+# ---------------------------------------------------------------------------
+
+def _field_list_for(family: str):
+    """Return the clarifying-field list for ``family`` or raise ValueError."""
+    if family == "landing-page":
+        return landing_gen.landing_page_field_list()
+    raise ValueError(
+        f"family {family!r} does not use the server-driven intake state "
+        "machine (only landing-page supports it in v1)"
+    )
+
+
+def _next_question_payload(family: str, state: dict) -> Optional[dict]:
+    """Compute the next NextQuestion for a draft and return its dict form."""
+    field_list = _field_list_for(family)
+    nq = intake_sm.next_question(field_list, state)
+    return nq.to_dict() if nq else None
+
+
+def _next_action_for(design_id: str, next_q: Optional[dict]) -> str:
+    """Render the imperative the caller should follow next."""
+    if next_q is None:
+        return (
+            "Intake complete. Proceed to STEP 2 (outline) per "
+            "instructions_legacy from the original design_landing_page "
+            "response, then generate + submit_design."
+        )
+    return (
+        f"After the user answers, call submit_clarifying_answer("
+        f"design_id='{design_id}', field_key='{next_q['field_key']}', "
+        "answer=<the user's reply>) to get the next question."
+    )
+
+
+@mcp.tool()
+def submit_clarifying_answer(
+    design_id: str,
+    field_key: str,
+    answer: str,
+) -> dict:
+    """Record the user's answer to the most recent clarifying question.
+
+    Returns the next question to ask, or ``null`` when intake is complete.
+    The server is the source of truth for which question is current — if
+    ``field_key`` does not match the expected next field, the call is
+    rejected so a stale chat session can't silently corrupt state.
+
+    Args:
+        design_id: The draft id returned by design_landing_page.
+        field_key: The field key from the most recent next_question
+                   (e.g. "page_intent").
+        answer:    The user's reply as a string. For multi-choice questions,
+                   the exact option text. For checkpoints, one of:
+                     - "continue" / "looks good" / "confirmed" -> advance
+                     - "change <field_key> to <new value>" -> update that
+                       field, re-show the checkpoint
+                     - "go back to <field_key>" -> rewind to that field
+
+    Returns:
+        On success: {
+            ok: True,
+            design_id, field_key_recorded, next_question,
+            intake_complete, collected_so_far, next_action,
+        }
+        On not-found / wrong user: {ok: False, design_id, errors: [...]}
+        On wrong field_key (out of sync): {
+            ok: False, design_id, errors: [...], expected_field_key,
+            next_question, hint,
+        }
+    """
+    user_email = resolve_user_email()
+    record = drafts.get(design_id, user_email)
+    if record is None:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                f"design_id {design_id!r} not found or not owned by this user."
+            ],
+        }
+
+    try:
+        field_list = _field_list_for(record.family)
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [str(exc)],
+        }
+
+    state = dict(record.clarifying_state or {})
+    # Surface a structured "wrong field" error rather than letting ValueError
+    # escape — gives the caller a payload it can render + recover from.
+    try:
+        new_state = intake_sm.submit_answer(field_list, state, field_key, answer)
+    except ValueError as exc:
+        msg = str(exc)
+        # Re-derive the expected field_key from the (unchanged) state so the
+        # caller can resync without a separate round-trip.
+        nq = intake_sm.next_question(field_list, state)
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [msg],
+            "expected_field_key": nq.field_key if nq else None,
+            "next_question": nq.to_dict() if nq else None,
+            "hint": (
+                "Re-ask the question in `next_question` then resubmit with "
+                "field_key=expected_field_key."
+            ),
+        }
+
+    drafts.update_clarifying_state(design_id, user_email, new_state)
+
+    next_q = _next_question_payload(record.family, new_state)
+    return {
+        "ok": True,
+        "design_id": design_id,
+        "field_key_recorded": field_key,
+        "next_question": next_q,
+        "intake_complete": next_q is None,
+        "collected_so_far": dict(new_state.get("collected") or {}),
+        "next_action": _next_action_for(design_id, next_q),
+    }
+
+
+@mcp.tool()
+def get_next_question(design_id: str) -> dict:
+    """Return the current `next_question` without changing state.
+
+    Useful when the caller's chat session has lost track of the conversation
+    (e.g. after a refresh) or for debugging the intake flow. Read-only —
+    no side effects.
+
+    Returns:
+        On found: {
+            ok: True,
+            design_id, family, intake_complete,
+            next_question, collected_so_far, next_action,
+        }
+        On not-found / wrong user: {ok: False, design_id, errors: [...]}
+    """
+    user_email = resolve_user_email()
+    record = drafts.get(design_id, user_email)
+    if record is None:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                f"design_id {design_id!r} not found or not owned by this user."
+            ],
+        }
+
+    try:
+        next_q = _next_question_payload(record.family, dict(record.clarifying_state or {}))
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [str(exc)],
+        }
+
+    return {
+        "ok": True,
+        "design_id": design_id,
+        "family": record.family,
+        "intake_complete": next_q is None,
+        "next_question": next_q,
+        "collected_so_far": dict((record.clarifying_state or {}).get("collected") or {}),
+        "next_action": _next_action_for(design_id, next_q),
     }
 
 

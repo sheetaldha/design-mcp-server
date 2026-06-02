@@ -51,6 +51,7 @@ class DraftRecord:
     commit_sha: Optional[str] = None
     design_dir: Optional[str] = None
     last_error: Optional[str] = None
+    clarifying_state: dict = field(default_factory=dict)
 
     # Legacy alias — older code (and tests) called this `history`.
     @property
@@ -83,6 +84,7 @@ class _PgBackend:
         "design_id, user_email, family, brief, slug_hint, status, "
         "iteration_log, slug, html, manifest, chat_summary, "
         "published_repo_sha, commit_sha, design_dir, last_error, "
+        "clarifying_state, "
         "created_at, updated_at, expires_at"
     )
 
@@ -103,6 +105,7 @@ class _PgBackend:
             commit_sha=row.get("commit_sha"),
             design_dir=row.get("design_dir"),
             last_error=row.get("last_error"),
+            clarifying_state=row.get("clarifying_state") or {},
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             expires_at=row["expires_at"],
@@ -116,10 +119,12 @@ class _PgBackend:
                     (design_id, user_email, family, brief, slug_hint, status,
                      iteration_log, slug, html, manifest, chat_summary,
                      published_repo_sha, commit_sha, design_dir, last_error,
+                     clarifying_state,
                      created_at, updated_at, expires_at)
                 VALUES (%s, %s, %s, %s, %s, %s,
                         %s::jsonb, %s, %s, %s::jsonb, %s,
                         %s, %s, %s, %s,
+                        %s::jsonb,
                         %s, %s, %s)
                 """,
                 (
@@ -138,6 +143,7 @@ class _PgBackend:
                     record.commit_sha,
                     record.design_dir,
                     record.last_error,
+                    json.dumps(record.clarifying_state or {}),
                     record.created_at,
                     record.updated_at,
                     record.expires_at,
@@ -170,6 +176,7 @@ class _PgBackend:
                        commit_sha = %s,
                        design_dir = %s,
                        last_error = %s,
+                       clarifying_state = %s::jsonb,
                        updated_at = %s,
                        expires_at = %s
                  WHERE design_id = %s AND user_email = %s
@@ -185,6 +192,7 @@ class _PgBackend:
                     record.commit_sha,
                     record.design_dir,
                     record.last_error,
+                    json.dumps(record.clarifying_state or {}),
                     record.updated_at,
                     record.expires_at,
                     record.design_id,
@@ -260,10 +268,27 @@ def _clone(record: DraftRecord) -> DraftRecord:
         commit_sha=record.commit_sha,
         design_dir=record.design_dir,
         last_error=record.last_error,
+        clarifying_state=_deep_copy_state(record.clarifying_state),
         created_at=record.created_at,
         updated_at=record.updated_at,
         expires_at=record.expires_at,
     )
+
+
+def _deep_copy_state(state: Optional[dict]) -> dict:
+    """Deep-copy the clarifying_state payload so in-memory mutations don't
+    bleed across draft fetches. We only need to copy the top-level keys we
+    care about — collected (dict) and skipped (list) — since
+    current_field_index / checkpoint_state are scalars.
+    """
+    if not state:
+        return {}
+    out = dict(state)
+    if isinstance(out.get("collected"), dict):
+        out["collected"] = dict(out["collected"])
+    if isinstance(out.get("skipped"), list):
+        out["skipped"] = list(out["skipped"])
+    return out
 
 
 _backend: _Backend = _PgBackend()
@@ -350,6 +375,36 @@ def update(design_id: str, user_email: str, **changes: Any) -> DraftRecord:
     }]
     _backend.update(record)
     return record
+
+
+def update_clarifying_state(
+    design_id: str,
+    user_email: str,
+    state: dict,
+) -> DraftRecord:
+    """Persist the new clarifying_state payload for a draft, scoped by user.
+
+    The state machine in ``intake_state_machine.py`` computes the new
+    payload from the old one + the latest user answer; this helper just
+    writes it through. Raises ``KeyError`` if the design_id is unknown
+    or owned by a different user (same contract as ``drafts.update``).
+    """
+    return update(design_id, user_email, clarifying_state=dict(state or {}))
+
+
+def get_clarifying_state(
+    design_id: str,
+    user_email: str,
+) -> Optional[dict]:
+    """Return the persisted clarifying_state for a draft (or ``None`` if
+    the design_id is unknown / owned by a different user). Empty payload
+    (``{}``) is returned as-is — callers should treat it as "fresh intake"
+    via ``intake_state_machine._normalise_state``.
+    """
+    record = get(design_id, user_email)
+    if record is None:
+        return None
+    return _deep_copy_state(record.clarifying_state)
 
 
 def set_status(design_id: str, user_email: str, status: str) -> None:

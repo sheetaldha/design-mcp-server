@@ -1757,3 +1757,322 @@ class TestStrictQuestionScript:
         script is a Landing Page-only change for now."""
         text = _instructions_for("survey-funnel", "anything")
         assert "STRICT QUESTION SCRIPT" not in text
+
+
+# ---------------------------------------------------------------------------
+# Server-driven clarifying-question state machine — new in this feature.
+# The `design_landing_page` response now includes `next_question`,
+# `instructions_short`, and `instructions_legacy`; a new tool
+# `submit_clarifying_answer` advances the state and returns the next
+# question (or null when intake is complete).
+# ---------------------------------------------------------------------------
+
+from design_mcp.server import (  # noqa: E402
+    get_next_question,
+    submit_clarifying_answer,
+)
+
+
+class TestDesignLandingPageServerDrivenIntake:
+    def test_response_carries_instructions_short(self):
+        result = design_landing_page(brief="anything")
+        assert "instructions_short" in result
+        text = result["instructions_short"]
+        # ~80 words, give or take. Cap at 200 to guard against accidental bloat.
+        assert isinstance(text, str)
+        wc = len(text.split())
+        assert 30 <= wc <= 200, f"instructions_short is {wc} words"
+        # Names the new tool + the verbatim contract.
+        assert "submit_clarifying_answer" in text
+        assert "VERBATIM" in text or "verbatim" in text
+        assert "AskUserQuestion" in text
+
+    def test_response_carries_instructions_legacy(self):
+        result = design_landing_page(brief="anything")
+        assert "instructions_legacy" in result
+        # The legacy prose is the full runbook — must contain the old anchors.
+        legacy = result["instructions_legacy"]
+        assert "STEP 2" in legacy
+        assert "submit_design" in legacy
+
+    def test_response_carries_first_next_question(self):
+        result = design_landing_page(brief="anything")
+        assert "next_question" in result
+        nq = result["next_question"]
+        assert nq is not None
+        # page_intent is always the first field — VERBATIM contract.
+        assert nq["field_key"] == "page_intent"
+        assert nq["question_text"] == "What kind of work is this?"
+        assert nq["options"] == [
+            "New microsite landing page",
+            "Enhancement to an existing landing page",
+            "Replica of an existing landing page",
+        ]
+        assert nq["is_checkpoint"] is False
+        assert nq["checkpoint_payload"] is None
+        assert nq["position"] == 1
+        # Sanity-check the instruction-for-claude exists and forbids paraphrase.
+        assert "VERBATIM" in nq["instruction_for_claude"]
+
+    def test_next_action_directs_to_submit_clarifying_answer(self):
+        result = design_landing_page(brief="anything")
+        assert "submit_clarifying_answer" in result["next_action"]
+        assert "page_intent" in result["next_action"]
+
+    def test_survey_funnel_response_omits_next_question(self):
+        """Survey funnel is out of scope for v1 — it still uses prose."""
+        from design_mcp.server import design_survey_funnel
+        result = design_survey_funnel(brief="anything")
+        assert "next_question" not in result
+        assert "instructions_short" not in result
+
+
+class TestSubmitClarifyingAnswer:
+    def _start(self, brief: str = "intake test brief") -> str:
+        return design_landing_page(brief=brief)["design_id"]
+
+    def test_first_answer_records_and_returns_next_question(self):
+        design_id = self._start()
+        result = submit_clarifying_answer(
+            design_id=design_id,
+            field_key="page_intent",
+            answer="New microsite landing page",
+        )
+        assert result["ok"] is True
+        assert result["field_key_recorded"] == "page_intent"
+        assert result["intake_complete"] is False
+        assert result["collected_so_far"] == {
+            "page_intent": "New microsite landing page",
+        }
+        # Next question is site_name (free-form).
+        assert result["next_question"]["field_key"] == "site_name"
+        assert result["next_question"]["options"] is None
+        # Persisted to the draft row.
+        record = drafts.get(design_id, DEFAULT_USER)
+        assert record.clarifying_state["collected"]["page_intent"] == (
+            "New microsite landing page"
+        )
+
+    def test_unknown_design_id_returns_error(self):
+        result = submit_clarifying_answer(
+            design_id="00000000-0000-0000-0000-000000000000",
+            field_key="page_intent",
+            answer="New microsite landing page",
+        )
+        assert result["ok"] is False
+        assert any("not owned by this user" in e for e in result["errors"])
+
+    def test_cross_user_blocked(self):
+        with _set_user("alice@x.com"):
+            design_id = self._start("alice's intake")
+        with _set_user("bob@x.com"):
+            result = submit_clarifying_answer(
+                design_id=design_id,
+                field_key="page_intent",
+                answer="New microsite landing page",
+            )
+        assert result["ok"] is False
+        # Alice's draft is untouched.
+        record = drafts.get(design_id, "alice@x.com")
+        assert record.clarifying_state in ({}, {"current_field_index": 0, "collected": {}, "skipped": [], "checkpoint_state": None})
+
+    def test_wrong_field_key_returns_structured_resync(self):
+        design_id = self._start()
+        # Caller jumps ahead to site_name without answering page_intent.
+        result = submit_clarifying_answer(
+            design_id=design_id,
+            field_key="site_name",
+            answer="HealthBoost",
+        )
+        assert result["ok"] is False
+        assert result["expected_field_key"] == "page_intent"
+        assert result["next_question"] is not None
+        assert result["next_question"]["field_key"] == "page_intent"
+        assert "hint" in result
+        # State is unchanged.
+        record = drafts.get(design_id, DEFAULT_USER)
+        assert record.clarifying_state.get("collected", {}) == {}
+
+    def test_empty_answer_records_skip(self):
+        design_id = self._start()
+        result = submit_clarifying_answer(
+            design_id=design_id, field_key="page_intent", answer="",
+        )
+        assert result["ok"] is True
+        record = drafts.get(design_id, DEFAULT_USER)
+        assert "page_intent" in record.clarifying_state["skipped"]
+
+    def test_full_intake_walk_ends_with_intake_complete(self):
+        design_id = self._start()
+        flow = [
+            ("page_intent", "New microsite landing page"),
+            ("site_name", "HealthBoost"),
+            ("site_brief", "uploaded paste"),
+            ("primary_cta", "Get started"),
+            ("review_checkpoint", "looks good"),
+            ("palette", "modern blue"),
+            ("benefits", "fast, accurate, cheap"),
+            ("tone", "Friendly + casual"),
+            ("gtm_tag", "GTM-XXXXXXX"),
+            ("references_to_avoid", "no competitor styles"),
+            ("optional_sections_content", "no optional sections"),
+        ]
+        last = None
+        for key, ans in flow:
+            last = submit_clarifying_answer(
+                design_id=design_id, field_key=key, answer=ans,
+            )
+            assert last["ok"] is True, f"failed at {key}: {last}"
+        # Last call: intake_complete=True, next_question=None.
+        assert last["intake_complete"] is True
+        assert last["next_question"] is None
+        # All non-checkpoint answers are in collected_so_far.
+        for key, ans in flow:
+            if key == "review_checkpoint":
+                continue
+            assert last["collected_so_far"][key] == ans
+        assert "instructions_legacy" in last["next_action"] or "STEP 2" in last["next_action"]
+
+    def test_checkpoint_change_path(self):
+        design_id = self._start()
+        # Walk to the checkpoint.
+        for key, ans in [
+            ("page_intent", "New microsite landing page"),
+            ("site_name", "HealthBoost"),
+            ("site_brief", "x"),
+            ("primary_cta", "Get started"),
+        ]:
+            submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
+        # Sanity: next question is the checkpoint.
+        nq = get_next_question(design_id=design_id)
+        assert nq["next_question"]["field_key"] == "review_checkpoint"
+        # Issue a change command.
+        result = submit_clarifying_answer(
+            design_id=design_id,
+            field_key="review_checkpoint",
+            answer="change site_name to Wellbright",
+        )
+        assert result["ok"] is True
+        # Still on the checkpoint.
+        assert result["next_question"]["field_key"] == "review_checkpoint"
+        assert result["collected_so_far"]["site_name"] == "Wellbright"
+
+    def test_checkpoint_rewind_path(self):
+        design_id = self._start()
+        for key, ans in [
+            ("page_intent", "New microsite landing page"),
+            ("site_name", "HealthBoost"),
+            ("site_brief", "x"),
+            ("primary_cta", "Get started"),
+        ]:
+            submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
+        result = submit_clarifying_answer(
+            design_id=design_id,
+            field_key="review_checkpoint",
+            answer="go back to site_brief",
+        )
+        assert result["ok"] is True
+        # The cursor jumps back to site_brief.
+        assert result["next_question"]["field_key"] == "site_brief"
+        assert "site_brief" not in result["collected_so_far"]
+
+
+class TestGetNextQuestion:
+    def test_returns_first_question_for_fresh_draft(self):
+        design_id = design_landing_page(brief="anything")["design_id"]
+        result = get_next_question(design_id=design_id)
+        assert result["ok"] is True
+        assert result["intake_complete"] is False
+        assert result["next_question"]["field_key"] == "page_intent"
+        assert result["collected_so_far"] == {}
+
+    def test_is_read_only_does_not_mutate_state(self):
+        design_id = design_landing_page(brief="anything")["design_id"]
+        before = drafts.get(design_id, DEFAULT_USER).clarifying_state
+        get_next_question(design_id=design_id)
+        get_next_question(design_id=design_id)
+        after = drafts.get(design_id, DEFAULT_USER).clarifying_state
+        assert before == after
+
+    def test_unknown_design_id_returns_error(self):
+        result = get_next_question(design_id="00000000-0000-0000-0000-000000000000")
+        assert result["ok"] is False
+
+    def test_returns_null_when_intake_complete(self):
+        design_id = design_landing_page(brief="anything")["design_id"]
+        # Skip every regular field, advance the checkpoint.
+        for key in [
+            "page_intent", "site_name", "site_brief", "primary_cta",
+        ]:
+            submit_clarifying_answer(design_id=design_id, field_key=key, answer="skip")
+        submit_clarifying_answer(
+            design_id=design_id, field_key="review_checkpoint", answer="continue",
+        )
+        for key in [
+            "palette", "benefits", "tone", "gtm_tag",
+            "references_to_avoid", "optional_sections_content",
+        ]:
+            submit_clarifying_answer(design_id=design_id, field_key=key, answer="skip")
+        result = get_next_question(design_id=design_id)
+        assert result["ok"] is True
+        assert result["intake_complete"] is True
+        assert result["next_question"] is None
+
+
+class TestDraftsClarifyingStateHelpers:
+    def test_update_and_get_round_trip(self):
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="x", slug_hint="x",
+        )
+        state = {
+            "current_field_index": 3,
+            "collected": {"page_intent": "New microsite landing page", "site_name": "HB"},
+            "skipped": ["palette"],
+            "checkpoint_state": None,
+        }
+        drafts.update_clarifying_state(record.design_id, DEFAULT_USER, state)
+        loaded = drafts.get_clarifying_state(record.design_id, DEFAULT_USER)
+        assert loaded == state
+
+    def test_fresh_draft_has_empty_clarifying_state(self):
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="x", slug_hint="x",
+        )
+        # Fresh draft starts with {} (matches the column default).
+        assert drafts.get_clarifying_state(record.design_id, DEFAULT_USER) == {}
+
+    def test_cross_user_get_returns_none(self):
+        record = drafts.create(
+            user_email="alice@x.com", family="landing-page",
+            brief="x", slug_hint="x",
+        )
+        assert drafts.get_clarifying_state(record.design_id, "bob@x.com") is None
+
+    def test_cross_user_update_raises_keyerror(self):
+        record = drafts.create(
+            user_email="alice@x.com", family="landing-page",
+            brief="x", slug_hint="x",
+        )
+        with pytest.raises(KeyError):
+            drafts.update_clarifying_state(record.design_id, "bob@x.com", {"x": 1})
+
+    def test_state_mutations_dont_bleed_across_gets(self):
+        """The in-memory backend deep-copies state so callers can mutate
+        without corrupting the next read."""
+        record = drafts.create(
+            user_email=DEFAULT_USER, family="landing-page",
+            brief="x", slug_hint="x",
+        )
+        drafts.update_clarifying_state(
+            record.design_id, DEFAULT_USER,
+            {"collected": {"a": 1}, "current_field_index": 0, "skipped": []},
+        )
+        loaded = drafts.get_clarifying_state(record.design_id, DEFAULT_USER)
+        loaded["collected"]["a"] = "MUTATED"
+        loaded["skipped"].append("MUTATED")
+        # Fresh fetch must not see the mutation.
+        fresh = drafts.get_clarifying_state(record.design_id, DEFAULT_USER)
+        assert fresh["collected"]["a"] == 1
+        assert fresh["skipped"] == []
