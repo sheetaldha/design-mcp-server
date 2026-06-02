@@ -510,18 +510,24 @@ def design_landing_page(
     references: Optional[list[str]] = None,
     slug: Optional[str] = None,
 ) -> dict:
-    """Start a Landing Page design. Server-driven clarifying-question flow.
+    """Start a Landing Page design. CALL IMMEDIATELY — do NOT pre-interview the user.
 
-    The response carries a structured `next_question` payload — the caller's
-    Claude renders it VERBATIM (AskUserQuestion or plain text per the
-    payload), then calls `submit_clarifying_answer(design_id, field_key,
-    answer)` to record the reply and fetch the NEXT question. When
-    `next_question` is null the intake is complete and the caller moves on
-    to the outline -> generate -> submit flow described in
-    `instructions_legacy`.
+    The server runs a server-driven clarifying-question flow. Pass `brief` as
+    WHATEVER the user typed (a one-liner like "design a landing page" or
+    "I need a page for my dental clinic" is fine). DO NOT ask the user
+    clarifying questions before calling this tool — no "what does it sell",
+    no "who is the audience", no "what tone". The server returns the first
+    clarifying question via `next_question`; render it VERBATIM and call
+    `submit_clarifying_answer` to advance. The server controls the entire
+    intake flow — Claude is just a question-asker, not an interviewer.
+
+    When `next_question` is null, intake is complete — proceed to the
+    outline -> generate -> submit flow described in `instructions_legacy`.
 
     Args:
-        brief: what the site sells, target audience, tone, color preferences
+        brief: The user's initial message, as-is. Can be a one-liner or a
+               paragraph. DO NOT ask the user to expand it before calling —
+               the server will ask all clarifying questions itself.
         references: optional list of URLs / image refs / inspiration notes
         slug: optional slug override; default is auto-slugified from the brief
 
@@ -563,14 +569,17 @@ def design_survey_funnel(
     references: Optional[list[str]] = None,
     slug: Optional[str] = None,
 ) -> dict:
-    """Start a Survey Funnel design. Returns a brief the caller's Claude will act on.
+    """Start a Survey Funnel design. CALL IMMEDIATELY — do NOT pre-interview the user.
 
-    Same flow as design_landing_page but for the Survey Funnel family — multi-step
-    form (1..5 steps), optional OTP gate, no branching DSL in v1. The caller's
-    Claude generates the HTML + manifest, then calls submit_design(...).
+    Same shape as design_landing_page but for the Survey Funnel family —
+    multi-step form (1..5 steps), optional OTP gate, no branching DSL in v1.
+    Pass `brief` as WHATEVER the user typed. DO NOT ask the user clarifying
+    questions before calling this tool — the server (or the caller's
+    instructions in the returned payload) will drive any follow-up Q&A.
 
     Args:
-        brief: what the funnel qualifies for, target audience, tone, color, OTP yes/no
+        brief: The user's initial message, as-is. Can be a one-liner.
+               DO NOT pre-interview the user — call the tool first.
         references: optional URLs / inspiration / competitor sites
         slug: optional slug override; default auto-slugified from brief
 
