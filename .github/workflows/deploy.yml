@@ -1,0 +1,97 @@
+name: Test and deploy to microsite-uat
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (frozen)
+        run: uv sync --frozen --extra dev
+
+      - name: Run pytest
+        run: uv run pytest -x
+
+  deploy:
+    name: Deploy to microsite-uat
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install rsync and openssh-client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rsync openssh-client
+
+      - name: Set up SSH agent
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: Add EC2 host to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H 13.238.39.183 >> ~/.ssh/known_hosts
+
+      - name: Rsync src/design_mcp to EC2
+        run: |
+          rsync -av --delete \
+            src/design_mcp/ \
+            ubuntu@13.238.39.183:/home/ubuntu/design-mcp-server/src/design_mcp/
+
+      - name: Install any new Python dependencies on EC2
+        run: |
+          ssh ubuntu@13.238.39.183 \
+            'cd /home/ubuntu/design-mcp-server && /home/ubuntu/.local/bin/uv pip install -e .'
+
+      - name: Restart PM2 process
+        run: |
+          ssh ubuntu@13.238.39.183 \
+            'pm2 restart design-mcp-server --update-env'
+
+      - name: Wait for service to come up
+        run: sleep 3
+
+      - name: Smoke test public endpoint
+        run: |
+          code=$(curl -fsS -o /dev/null -w "%{http_code}" --max-time 10 https://design-mcp.leadloom.com.au/ || echo "000")
+          echo "HTTP status: $code"
+          case "$code" in
+            200|301|302|307|308|400|401|403|404|405)
+              echo "Service is responding (HTTP $code) — healthy"
+              ;;
+            *)
+              echo "Smoke test FAILED — HTTP $code (connection error or 5xx)"
+              exit 1
+              ;;
+          esac
+
+      - name: Record deployed commit
+        run: echo "Deployed commit: $GITHUB_SHA"
