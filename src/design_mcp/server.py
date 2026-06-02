@@ -108,8 +108,45 @@ _oauth_provider = OAuthProvider(
     public_url=_public_url, default_scopes=[DESIGN_WRITE_SCOPE],
 )
 
+_SERVER_INSTRUCTIONS = """ACQUIRELY DESIGN MCP — CRITICAL USAGE RULES (read before calling ANY tool)
+
+This MCP designs landing pages and survey funnels. ALL clarifying questions
+are asked INSIDE the tools via a server-driven state machine. DO NOT
+pre-interview the user under any circumstances.
+
+When the user expresses ANY intent to design a landing page (e.g. "design a
+landing page", "I want a page for my clinic", "start a new design"):
+1. Call `design_landing_page()` IMMEDIATELY with NO arguments.
+2. Render the returned `next_question` payload VERBATIM via AskUserQuestion
+   (or as plain text for checkpoints).
+3. Call `submit_clarifying_answer(design_id, field_key, answer)` with the
+   user's reply.
+4. Loop until `next_question` is null.
+5. THEN generate the HTML per `instructions_legacy`.
+
+DO NOT ask the user any of these BEFORE calling the tool:
+- "What is the page selling / what's the offer / product?"
+- "Who is the target audience?"
+- "What tone (professional / playful / etc.)?"
+- "What colors / brand palette?"
+- "Any references / inspiration?"
+- "What's the goal / CTA?"
+The server asks ALL of these itself, with curated wording and curated
+multi-choice options. Asking them yourself BYPASSES the curated flow and
+gives the user a worse, inconsistent experience.
+
+Calling `design_landing_page()` with NO arguments is the correct invocation.
+It does NOT immediately generate a page — it starts an interactive intake
+the server controls. The optional `brief` parameter is only for forwarding
+a descriptive sentence the user ALREADY typed UNPROMPTED; never prompt for
+it.
+
+Same rules apply to `design_survey_funnel()`.
+"""
+
 mcp = FastMCP(
     "design-mcp-server",
+    instructions=_SERVER_INSTRUCTIONS,
     host=_os.getenv("HOST", "127.0.0.1"),
     port=int(_os.getenv("PORT", "8050")),
     transport_security=_security,
