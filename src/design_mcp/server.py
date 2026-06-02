@@ -506,30 +506,38 @@ def design_ping() -> dict:
 
 @mcp.tool()
 def design_landing_page(
-    brief: str,
+    brief: str = "",
     references: Optional[list[str]] = None,
     slug: Optional[str] = None,
 ) -> dict:
-    """Start a Landing Page design. CALL IMMEDIATELY — do NOT pre-interview the user.
+    """Start a Landing Page design. CALL WITH NO ARGUMENTS — the server asks everything.
 
-    The server runs a server-driven clarifying-question flow. Pass `brief` as
-    WHATEVER the user typed (a one-liner like "design a landing page" or
-    "I need a page for my dental clinic" is fine). DO NOT ask the user
-    clarifying questions before calling this tool — no "what does it sell",
-    no "who is the audience", no "what tone". The server returns the first
-    clarifying question via `next_question`; render it VERBATIM and call
-    `submit_clarifying_answer` to advance. The server controls the entire
-    intake flow — Claude is just a question-asker, not an interviewer.
+    ALL PARAMETERS ARE OPTIONAL. The normal invocation is
+    `design_landing_page()` with no arguments. The server runs a
+    server-driven clarifying-question flow that asks the user every detail
+    it needs (intent, brand, brief, CTA, palette, tone, etc.) — Claude does
+    NOT need to gather any context before calling.
 
-    When `next_question` is null, intake is complete — proceed to the
-    outline -> generate -> submit flow described in `instructions_legacy`.
+    DO NOT pre-interview the user. DO NOT ask "what it sells" / "target
+    audience" / "tone" / "color preferences" / "references" before calling
+    this tool. Those are clarifying questions the server will ask itself.
+
+    The response carries `next_question` — render it VERBATIM (via
+    AskUserQuestion or plain text per the payload) and call
+    `submit_clarifying_answer(design_id, field_key, answer)` to advance.
+    Loop until `next_question` is null, then proceed to the outline ->
+    generate -> submit flow described in `instructions_legacy`.
 
     Args:
-        brief: The user's initial message, as-is. Can be a one-liner or a
-               paragraph. DO NOT ask the user to expand it before calling —
-               the server will ask all clarifying questions itself.
-        references: optional list of URLs / image refs / inspiration notes
-        slug: optional slug override; default is auto-slugified from the brief
+        brief: OPTIONAL forwarding hint. If the user happens to have typed a
+               descriptive sentence (e.g. "I need a page for my dental
+               clinic"), pass it here as-is and the server will pre-populate
+               the site_brief field. Otherwise pass nothing — the server
+               will ask for the brief as one of its clarifying questions.
+               DO NOT prompt the user for a brief just to fill this in.
+        references: OPTIONAL list of URLs / image refs the user already
+                    provided. DO NOT prompt the user just to fill this in.
+        slug: OPTIONAL slug override; server auto-generates otherwise.
 
     Returns:
         {
@@ -560,28 +568,41 @@ def design_landing_page(
         brief=brief,
         slug_hint=brief_payload["slug_hint"],
     )
+    if brief.strip():
+        drafts.update_clarifying_state(
+            record.design_id,
+            user_email,
+            {
+                "current_field_index": 0,
+                "collected": {"site_brief": brief.strip()},
+                "skipped": [],
+                "checkpoint_state": "pending",
+            },
+        )
+        record = drafts.get(record.design_id, user_email) or record
     return _entry_response(record, brief_payload)
 
 
 @mcp.tool()
 def design_survey_funnel(
-    brief: str,
+    brief: str = "",
     references: Optional[list[str]] = None,
     slug: Optional[str] = None,
 ) -> dict:
-    """Start a Survey Funnel design. CALL IMMEDIATELY — do NOT pre-interview the user.
+    """Start a Survey Funnel design. CALL WITH NO ARGUMENTS — server asks everything.
 
-    Same shape as design_landing_page but for the Survey Funnel family —
-    multi-step form (1..5 steps), optional OTP gate, no branching DSL in v1.
-    Pass `brief` as WHATEVER the user typed. DO NOT ask the user clarifying
-    questions before calling this tool — the server (or the caller's
-    instructions in the returned payload) will drive any follow-up Q&A.
+    ALL PARAMETERS ARE OPTIONAL. The normal invocation is
+    `design_survey_funnel()` with no arguments. DO NOT pre-interview the
+    user before calling this tool — no "what does the funnel qualify for",
+    no "tone", no "OTP yes/no". Follow the `instructions` payload after
+    calling.
 
     Args:
-        brief: The user's initial message, as-is. Can be a one-liner.
-               DO NOT pre-interview the user — call the tool first.
-        references: optional URLs / inspiration / competitor sites
-        slug: optional slug override; default auto-slugified from brief
+        brief: OPTIONAL forwarding hint. Pass any descriptive sentence the
+               user already typed; otherwise pass nothing. DO NOT prompt the
+               user just to fill this in.
+        references: OPTIONAL URLs / inspiration. DO NOT prompt for these.
+        slug: OPTIONAL slug override; server auto-generates otherwise.
 
     Returns:
         Same shape as design_landing_page, but family="survey-funnel" and

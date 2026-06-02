@@ -1828,7 +1828,9 @@ class TestDesignLandingPageServerDrivenIntake:
 
 
 class TestSubmitClarifyingAnswer:
-    def _start(self, brief: str = "intake test brief") -> str:
+    # Default empty brief: avoids the pre-populate-site_brief shortcut so
+    # we test the linear state-machine walk from a clean slate.
+    def _start(self, brief: str = "") -> str:
         return design_landing_page(brief=brief)["design_id"]
 
     def test_first_answer_records_and_returns_next_question(self):
@@ -1864,7 +1866,7 @@ class TestSubmitClarifyingAnswer:
 
     def test_cross_user_blocked(self):
         with _set_user("alice@x.com"):
-            design_id = self._start("alice's intake")
+            design_id = self._start()
         with _set_user("bob@x.com"):
             result = submit_clarifying_answer(
                 design_id=design_id,
@@ -1979,7 +1981,8 @@ class TestSubmitClarifyingAnswer:
 
 class TestGetNextQuestion:
     def test_returns_first_question_for_fresh_draft(self):
-        design_id = design_landing_page(brief="anything")["design_id"]
+        # Empty brief so site_brief is NOT pre-populated → collected_so_far is empty.
+        design_id = design_landing_page(brief="")["design_id"]
         result = get_next_question(design_id=design_id)
         assert result["ok"] is True
         assert result["intake_complete"] is False
@@ -1987,7 +1990,7 @@ class TestGetNextQuestion:
         assert result["collected_so_far"] == {}
 
     def test_is_read_only_does_not_mutate_state(self):
-        design_id = design_landing_page(brief="anything")["design_id"]
+        design_id = design_landing_page(brief="")["design_id"]
         before = drafts.get(design_id, DEFAULT_USER).clarifying_state
         get_next_question(design_id=design_id)
         get_next_question(design_id=design_id)
@@ -1999,7 +2002,7 @@ class TestGetNextQuestion:
         assert result["ok"] is False
 
     def test_returns_null_when_intake_complete(self):
-        design_id = design_landing_page(brief="anything")["design_id"]
+        design_id = design_landing_page(brief="")["design_id"]
         # Skip every regular field, advance the checkpoint.
         for key in [
             "page_intent", "site_name", "site_brief", "primary_cta",
@@ -2017,6 +2020,35 @@ class TestGetNextQuestion:
         assert result["ok"] is True
         assert result["intake_complete"] is True
         assert result["next_question"] is None
+
+
+class TestBriefPrePopulatesSiteBrief:
+    def test_nonempty_brief_pre_populates_site_brief(self):
+        # Caller passed a brief — server should stash it as site_brief so the
+        # user is NOT asked for it again during the clarifying flow.
+        design_id = design_landing_page(
+            brief="I need a page for my dental clinic in Sydney"
+        )["design_id"]
+        record = drafts.get(design_id, DEFAULT_USER)
+        assert record.clarifying_state["collected"]["site_brief"] == (
+            "I need a page for my dental clinic in Sydney"
+        )
+
+    def test_empty_brief_does_not_pre_populate(self):
+        design_id = design_landing_page(brief="")["design_id"]
+        record = drafts.get(design_id, DEFAULT_USER)
+        assert record.clarifying_state in (
+            {},
+            {"current_field_index": 0, "collected": {}, "skipped": [], "checkpoint_state": None},
+        )
+
+    def test_whitespace_only_brief_does_not_pre_populate(self):
+        design_id = design_landing_page(brief="   \n  ")["design_id"]
+        record = drafts.get(design_id, DEFAULT_USER)
+        assert record.clarifying_state in (
+            {},
+            {"current_field_index": 0, "collected": {}, "skipped": [], "checkpoint_state": None},
+        )
 
 
 class TestDraftsClarifyingStateHelpers:
