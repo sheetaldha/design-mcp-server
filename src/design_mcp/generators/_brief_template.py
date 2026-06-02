@@ -30,31 +30,49 @@ class ClarifyingField:
     should surface via claude.ai's built-in `AskUserQuestion` multi-choice
     card UI. Leave it as None for free-form text fields where the answer
     space is too varied to pre-enumerate.
+
+    `is_checkpoint=True` flags a pseudo-field that does NOT collect data — it
+    asks the user to confirm a summary of everything collected so far before
+    the intake continues. The brief template renders these differently
+    (summary + confirm/change/back-up prompt) and skips them entirely from
+    the "missing field" counting used for `*Q N of M*` progress markers.
     """
 
     key: str
     question: str
     suggested_options: Optional[tuple[str, ...]] = None
+    is_checkpoint: bool = False
 
 
-def field(key: str, question: str, *options: str) -> ClarifyingField:
-    """Convenience constructor — `field("k", "q?", "A", "B")` vs the dataclass form."""
+def field(
+    key: str,
+    question: str,
+    *options: str,
+    is_checkpoint: bool = False,
+) -> ClarifyingField:
+    """Convenience constructor — `field("k", "q?", "A", "B")` vs the dataclass form.
+
+    Pass `is_checkpoint=True` for a summary-and-confirm pseudo-field that
+    doesn't take an answer but pauses the intake for user review.
+    """
     return ClarifyingField(
         key=key,
         question=question,
         suggested_options=tuple(options) if options else None,
+        is_checkpoint=is_checkpoint,
     )
 
 
 # Per-family defaults used by speed-mode and missing-answer fallback.
 LANDING_PAGE_DEFAULTS: dict[str, str] = {
-    "page_intent": "An Acquirely product/service",
-    "audience": "general consumers",
+    "page_intent": "New microsite landing page",
     "site_name": "Acquirely",
+    "site_brief": "(none provided — full intake will run)",
     "primary_cta": "Get started",
     "palette": "modern blue (#2563eb primary, slate text)",
     "benefits": "three differentiated value props",
     "tone": "friendly + professional",
+    "gtm_tag": "(none — skip GTM embed)",
     "references_to_avoid": "none stated",
     # Speed-mode skips optional sections rather than fabricating fake
     # testimonials / FAQs / trust badges. If the user wants them, they answer
@@ -81,8 +99,14 @@ def _render_field_line(cf: ClarifyingField) -> str:
     Fields with `suggested_options` direct the caller to use claude.ai's
     AskUserQuestion multi-choice card UI with the curated option set (plus
     an always-on "Other" free-text escape). Free-form fields render as plain
-    text questions.
+    text questions. Checkpoint pseudo-fields render the summary-and-confirm
+    rubric instead.
     """
+    if cf.is_checkpoint:
+        return (
+            f"  - {cf.key} (CHECKPOINT — pseudo-field, do NOT ask for data): {cf.question}\n"
+            f"      Render the summary-and-confirm rubric from STEP 1 (c) point 4."
+        )
     if cf.suggested_options:
         opts = ", ".join(f'"{o}"' for o in cf.suggested_options)
         return (
@@ -96,36 +120,12 @@ def _render_field_line(cf: ClarifyingField) -> str:
     )
 
 
-def render_brief(
-    *,
-    family_label: str,
-    brief: str,
-    slug_hint: str,
-    references: Optional[list[str]],
-    clarifying_fields: list[ClarifyingField],
-    family_contract_notes: str,
-    defaults: dict[str, str],
-    sanity_check_items: list[str],
-) -> str:
-    """Render the checklist-first step-wise intake scaffold for a design family."""
-    ref_block = ""
-    if references:
-        ref_block = "References:\n" + "\n".join(f"  - {r}" for r in references) + "\n\n"
+# ---------------------------------------------------------------------------
+# Intake STEP-1 blocks — two variants. Both are inlined into the rendered
+# brief by render_brief(); only the wording inside STEP 1 differs.
+# ---------------------------------------------------------------------------
 
-    field_lines = "\n".join(_render_field_line(cf) for cf in clarifying_fields)
-    defaults_lines = "\n".join(f"  - {k}: {v}" for k, v in defaults.items())
-    sanity_line = " · ".join(sanity_check_items)
-
-    return f"""You are helping design a {family_label} microsite for Acquirely. Render every status / outline / preview / error moment as a tight ✅/❌/❓ checklist. Prose only inside STEP 1 questions, asked ONE AT A TIME.
-
-`design_id` (returned alongside) is the handle for submit_design, update_design, get_design_status, cancel_design, get_preview_url. Suggested slug: {slug_hint} (kebab-case).
-
-User's opening brief:
-  "{brief}"
-
-{ref_block}Six steps, in order. No HTML before the user has approved a written outline.
-
-STEP 1 — Acknowledge, parse, run the intake.
+_CLASSIC_INTAKE_BLOCK = """STEP 1 — Acknowledge, parse, run the intake.
 For fields with suggested_options, prefer the AskUserQuestion tool (claude.ai's native multi-choice card UI). For free-form fields, use plain text questions. Don't bundle multiple fields into one question — one at a time.
 (a) One warm sentence. No gushing.
 (b) Parse the brief vs the fields below. Echo back filled fields as ✅, missing as ❓. Exact format:
@@ -138,7 +138,77 @@ From your brief:
 Asking the missing ones one at a time. Or say "just generate it" to skip.
 ```
 (c) Ask each missing field ONE AT A TIME. Prefix every Question N of M (n = current, M = total missing) — short form `*Q<n> of <M>*`. Example: `*Q2 of 4* — Brand colours: any in mind, or should I pick?` Wait for the reply before the next.
-(d) If a reply answers more than one field, accept all, drop them, lower M.
+(d) If a reply answers more than one field, accept all, drop them, lower M."""
+
+
+_BRIEF_FIRST_INTAKE_BLOCK = """STEP 1 — Acknowledge, scope FIRST (page_intent routes the rest).
+AskUserQuestion for suggested_options fields, plain text otherwise. One at a time.
+(a) One warm sentence. No gushing.
+(b) Ask `page_intent` IMMEDIATELY. Branch on the answer:
+  - "New microsite landing page" → brief-first skip-answered intake in (c).
+  - "Enhancement to an existing landing page" → ask page URL, call `fetch_url_screenshots(url)` (3 images @ mobile/iPad/desktop) for visual context, skip brand/tone/palette/benefits, ask ONLY: what changes + new offer/CTA, jump to STEP 3.
+  - "Replica of an existing landing page" → ask URL or pasted HTML; if URL, call `fetch_url_screenshots(url)`. Clone structure + copy, ask for minor edits, jump to STEP 3.
+
+(c) BRIEF-FIRST + SKIP-ANSWERED (page_intent = "New microsite landing page"):
+  1. Ask `site_brief` SECOND. Tell user: paste images/copy/wireframes/reference URLs — more shared = fewer questions.
+  2. Parse brief against every remaining field. Already answered → skip; quote as ✅ (e.g. `✅ Palette: teal (from brief)`). Still missing → ask one at a time, prefix each Question N of M — short form `*Q<n> of <M>*` (M = remaining-unanswered, excluding already-answered + checkpoint pseudo-fields).
+  3. Echo back format:
+```
+From your brief:
+✅ <field>: <value already answered>
+❓ <field still missing>
+
+Asking the remaining ones one at a time. Or "just generate it" to skip.
+```
+  4. CHECKPOINT (`is_checkpoint=True`): render ✅/❓ summary of collected + remaining. Wait for confirmation. "looks good"/"confirmed"/"continue" → proceed. "change X to Y" → update + re-show. "go back to Z" → re-ask.
+(d) If one reply answers several fields, accept all, lower M."""
+
+
+def render_brief(
+    *,
+    family_label: str,
+    brief: str,
+    slug_hint: str,
+    references: Optional[list[str]],
+    clarifying_fields: list[ClarifyingField],
+    family_contract_notes: str,
+    defaults: dict[str, str],
+    sanity_check_items: list[str],
+    enable_brief_first_branching: bool = False,
+) -> str:
+    """Render the checklist-first step-wise intake scaffold for a design family.
+
+    When `enable_brief_first_branching=True` the rendered STEP 1 routes on the
+    user's `page_intent` answer (New / Enhancement / Replica), and STEP 2 runs
+    a brief-first + skip-answered intake (the user uploads a brief once, then
+    the caller skips any clarifying field whose answer is already covered).
+    Used by the Landing Page family; Survey Funnel leaves it off and gets the
+    classic flat intake described inline below.
+    """
+    ref_block = ""
+    if references:
+        ref_block = "References:\n" + "\n".join(f"  - {r}" for r in references) + "\n\n"
+
+    field_lines = "\n".join(_render_field_line(cf) for cf in clarifying_fields)
+    defaults_lines = "\n".join(f"  - {k}: {v}" for k, v in defaults.items())
+    sanity_line = " · ".join(sanity_check_items)
+
+    intake_block = (
+        _BRIEF_FIRST_INTAKE_BLOCK
+        if enable_brief_first_branching
+        else _CLASSIC_INTAKE_BLOCK
+    )
+
+    return f"""You are helping design a {family_label} microsite for Acquirely. Render every status / outline / preview / error moment as a tight ✅/❌/❓ checklist. Prose only inside STEP 1 questions, asked ONE AT A TIME.
+
+`design_id` (returned alongside) is the handle for submit_design, update_design, get_design_status, cancel_design, get_preview_url. Suggested slug: {slug_hint} (kebab-case).
+
+User's opening brief:
+  "{brief}"
+
+{ref_block}Six steps, in order. No HTML before the user has approved a written outline.
+
+{intake_block}
 
 Clarifying fields (key — question if missing):
 {field_lines}
@@ -146,7 +216,7 @@ Clarifying fields (key — question if missing):
 Defaults (speed-mode + any field left missing):
 {defaults_lines}
 
-Speed-mode triggers: `just generate it`, `skip questions`, `use defaults`, `go ahead`, `you pick`, `surprise me`. On any: one line ("Skipping intake — using defaults."), fill from defaults, jump to STEP 2. Outline still gets user approval before HTML.
+Speed-mode triggers: `just generate it`, `skip questions`, `use defaults`, `go ahead`, `you pick`, `surprise me`. On any: one line ("Skipping intake — using defaults."), fill from defaults, jump to STEP 2 (Outline). Outline still gets user approval before HTML.
 
 STEP 2 — Outline. No HTML yet.
 ```
