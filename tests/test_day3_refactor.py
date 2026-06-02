@@ -600,11 +600,14 @@ class TestInstructionsUX:
         text = _instructions_for(family, "anything")
         # Post-addition of (a) per-field AskUserQuestion option guidance and
         # (b) the landing-page brief-first scope-routing + skip-answered intake
-        # block + new clarifying fields (site_brief, review_checkpoint, gtm_tag),
-        # the landing brief lands ~1600 words. 1600 keeps a small headroom for
-        # one more curated option list without forcing another trim.
+        # block + new clarifying fields (site_brief, review_checkpoint, gtm_tag)
+        # + (c) the STRICT QUESTION SCRIPT preamble & per-field VERBATIM
+        # rendering that stops the caller's Claude from inventing or
+        # rephrasing clarifying questions, the landing brief now lands
+        # ~2100 words. Ceiling bumped to 2200 to keep small headroom for
+        # one more curated option list without forcing a trim.
         word_count = len(text.split())
-        assert word_count <= 1600, f"[{family}] instructions are {word_count} words; ceiling 1600"
+        assert word_count <= 2200, f"[{family}] instructions are {word_count} words; ceiling 2200"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -1536,8 +1539,14 @@ class TestSuggestedOptionsRendered:
         # `palette` has no suggested_options — should be rendered as plain text.
         # (audience was dropped from landing-page; the site_brief upload covers
         # persona/audience info now.)
+        # Under the STRICT QUESTION SCRIPT rendering each free-form field is
+        # called out as `Tool: plain-text prompt (NOT AskUserQuestion)` and
+        # the field block is keyed by `Field <n> — palette` rather than the
+        # old casual `Ask palette as plain text` bullet.
         text = _instructions_for("landing-page", "anything")
-        assert "Ask palette as plain text" in text
+        assert "— palette" in text
+        # The free-form field block must steer the caller away from AskUserQuestion.
+        assert "plain-text prompt (NOT AskUserQuestion)" in text
 
     def test_survey_funnel_free_form_field_marked_plain_text(self):
         # `audience` has no suggested_options on survey-funnel either.
@@ -1650,3 +1659,101 @@ class TestLandingPageClarifyingFieldsRewrite:
         # Default remains False.
         cf2 = field("k", "q?")
         assert cf2.is_checkpoint is False
+
+
+# ---------------------------------------------------------------------------
+# STRICT QUESTION SCRIPT — landing-page brief must forbid the caller's Claude
+# from inventing, rephrasing, or reordering clarifying questions or options.
+# Driven by a discovered prod issue where Claude (in claude.ai) was asking
+# things like "What is the page selling?" / "Who is the target audience?"
+# that aren't in `_CLARIFYING_FIELDS` at all. The rendered brief now ships a
+# fixed script with VERBATIM language per field.
+# ---------------------------------------------------------------------------
+
+class TestStrictQuestionScript:
+    def test_brief_carries_strict_question_script_preamble(self):
+        text = _instructions_for("landing-page", "anything")
+        assert "STRICT QUESTION SCRIPT" in text
+
+    def test_brief_carries_obey_strictness_phrase(self):
+        text = _instructions_for("landing-page", "anything")
+        # The preamble names the strictness up front so it's impossible
+        # to misread as a soft guideline.
+        assert "READ FIRST AND OBEY" in text or "FIXED SCRIPT" in text
+
+    def test_brief_explicitly_forbids_inventing_questions(self):
+        text = _instructions_for("landing-page", "anything")
+        lower = text.lower()
+        assert "do not invent" in lower, (
+            "Strict-script preamble must forbid inventing clarifying questions"
+        )
+
+    def test_brief_explicitly_forbids_rephrasing(self):
+        text = _instructions_for("landing-page", "anything")
+        lower = text.lower()
+        assert "do not rephrase" in lower or "no rephrasing" in lower
+
+    def test_each_clarifying_field_rendering_uses_verbatim_marker(self):
+        """For every field in `_CLARIFYING_FIELDS` the rendered brief must
+        carry the VERBATIM language near the field's question text — so the
+        caller's Claude treats the wording as a literal payload to copy into
+        AskUserQuestion rather than a hint to paraphrase."""
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        text = _instructions_for("landing-page", "anything")
+        assert "VERBATIM" in text
+        # Every non-checkpoint field block should carry the VERBATIM marker
+        # in the line that wraps the question text. Checkpoint blocks use it
+        # differently (lead-in line) but should still surface the marker.
+        for cf in _CLARIFYING_FIELDS:
+            block_marker = f"— {cf.key}"
+            assert block_marker in text, f"Missing field block header for {cf.key!r}"
+
+    def test_page_intent_options_rendered_verbatim_and_in_order(self):
+        """page_intent's three options must appear verbatim, in order, near a
+        VERBATIM marker so the caller knows not to reorder or reword."""
+        text = _instructions_for("landing-page", "anything")
+        assert "What kind of work is this?" in text
+        # All three options present.
+        for opt in (
+            "New microsite landing page",
+            "Enhancement to an existing landing page",
+            "Replica of an existing landing page",
+        ):
+            assert opt in text, f"page_intent option {opt!r} missing"
+        # And the options must appear in the listed order — first option
+        # before the second, second before the third.
+        new_idx = text.index("New microsite landing page")
+        enh_idx = text.index("Enhancement to an existing landing page")
+        rep_idx = text.index("Replica of an existing landing page")
+        assert new_idx < enh_idx < rep_idx
+
+    def test_page_intent_block_explicitly_uses_verbatim(self):
+        """The page_intent block specifically must say VERBATIM near its
+        question text — not just appear somewhere in the document."""
+        text = _instructions_for("landing-page", "anything")
+        # Find the page_intent block and assert VERBATIM appears within it.
+        start = text.index("— page_intent")
+        # The block ends at the next "Field N —" or two blank lines.
+        block = text[start:start + 1500]
+        assert "VERBATIM" in block, (
+            "page_intent's field block must contain the VERBATIM marker"
+        )
+        assert "What kind of work is this?" in block
+
+    def test_review_checkpoint_marked_as_checkpoint_not_question(self):
+        text = _instructions_for("landing-page", "anything")
+        # CHECKPOINT marker (already covered by another test, but pinned here
+        # in the strict-script context).
+        assert "CHECKPOINT" in text
+        # The checkpoint block must steer the caller AWAY from AskUserQuestion.
+        # Locate the field-5 block and assert.
+        start = text.index("— review_checkpoint")
+        block = text[start:start + 800]
+        assert "not a question" in block.lower() or "NOT a question" in block
+        assert "do NOT use AskUserQuestion" in block or "NOT AskUserQuestion" in block
+
+    def test_strict_script_only_applies_to_landing_page(self):
+        """Survey Funnel must keep the casual intake rendering — the strict
+        script is a Landing Page-only change for now."""
+        text = _instructions_for("survey-funnel", "anything")
+        assert "STRICT QUESTION SCRIPT" not in text

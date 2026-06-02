@@ -121,6 +121,65 @@ def _render_field_line(cf: ClarifyingField) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Strict-script rendering — used by the Landing Page family to stop the
+# caller's Claude from inventing / rephrasing clarifying questions or
+# fabricating option sets that aren't in `_CLARIFYING_FIELDS`. The brief
+# becomes a FIXED SCRIPT, not a soft guideline.
+# ---------------------------------------------------------------------------
+
+_STRICT_SCRIPT_PREAMBLE = """STRICT QUESTION SCRIPT — READ FIRST AND OBEY.
+
+The clarifying questions below are a FIXED SCRIPT, not suggestions. Treat them like a deposition transcript: use them word-for-word, in order, no improvisation.
+
+1. **DO NOT INVENT QUESTIONS.** Ask ONLY the fields listed below. If a field you wish existed isn't here, it isn't part of intake — skip it.
+2. **DO NOT REPHRASE.** Use each field's question text VERBATIM as the AskUserQuestion question (or as the plain-text prompt). No "improving" the wording, no shortening, no softening.
+3. **DO NOT INVENT OR REORDER OPTIONS.** For fields with a curated option list, pass those options to AskUserQuestion (claude.ai's multi-choice card UI) exactly as written, in the exact order listed. Do not add options, do not drop options, do not change wording. "Other" is added by claude.ai's UI as a free-text escape — you do not need to add it to the options array yourself.
+4. **ASK ONE AT A TIME, IN ORDER.** Walk the field list top to bottom, prefixing each `*Q<n> of <M>*` (excluding already-answered + checkpoint pseudo-fields from M).
+5. **SKIP-ANSWERED IS THE ONLY EXCEPTION.** If the user's brief or a prior reply already answers a field, echo it back as ✅ and move on — never re-ASK a question whose answer is already on the table.
+6. **CHECKPOINT FIELDS ARE NOT QUESTIONS.** Fields marked CHECKPOINT render a ✅/❓ summary of collected + remaining answers and wait for confirmation. Do NOT present them via AskUserQuestion.
+7. **CLARIFY ONLY AFTER ANSWER.** If a user's response to a defined question is unclear, you may ask ONE follow-up in your own words — but only after the original question has been answered or explicitly skipped. Never pre-emptively split a defined question into multiple ones.
+
+Why this matters: operators are non-technical and rely on a predictable, repeatable flow. Each invented question or reworded option erodes trust and makes batches inconsistent. The script below is the contract.
+
+"""
+
+
+def _render_field_line_strict(cf: ClarifyingField, index: int) -> str:
+    """Strict per-field rendering — spells out the EXACT AskUserQuestion payload.
+
+    Used by families that opt into `strict_script=True`. Each field block names
+    the question text and (where applicable) the options as VERBATIM so the
+    caller's Claude can copy them straight into AskUserQuestion without
+    paraphrasing or reordering.
+    """
+    if cf.is_checkpoint:
+        return (
+            f"Field {index} — {cf.key} (CHECKPOINT — not a question, do NOT use AskUserQuestion)\n"
+            f"  Action: render a ✅/❓ checklist summary of every answer collected "
+            f"so far + any remaining questions. Wait for user confirmation.\n"
+            f"  Accept: \"looks good\" / \"confirmed\" / \"continue\" → proceed to next field.\n"
+            f"  Accept: \"change X to Y\" → update the named field, re-show the summary.\n"
+            f"  Accept: \"go back to Z\" → re-ask the named field.\n"
+            f"  Prompt text (use VERBATIM as the lead-in line): \"{cf.question}\""
+        )
+    if cf.suggested_options:
+        opts_block = "\n".join(f'    - "{o}"' for o in cf.suggested_options)
+        return (
+            f"Field {index} — {cf.key}\n"
+            f"  Question text (use VERBATIM): \"{cf.question}\"\n"
+            f"  Options (use VERBATIM, in this exact order — do NOT add, drop, reword, or reorder):\n"
+            f"{opts_block}\n"
+            f"  Tool: AskUserQuestion with the question text + option list above. "
+            f"Do NOT invent additional options. (claude.ai's UI surfaces \"Other\" as a free-text escape automatically.)"
+        )
+    return (
+        f"Field {index} — {cf.key}\n"
+        f"  Question text (use VERBATIM): \"{cf.question}\"\n"
+        f"  Options: none — free-text answer. Tool: plain-text prompt (NOT AskUserQuestion)."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Intake STEP-1 blocks — two variants. Both are inlined into the rendered
 # brief by render_brief(); only the wording inside STEP 1 differs.
 # ---------------------------------------------------------------------------
@@ -175,6 +234,7 @@ def render_brief(
     defaults: dict[str, str],
     sanity_check_items: list[str],
     enable_brief_first_branching: bool = False,
+    strict_script: bool = False,
 ) -> str:
     """Render the checklist-first step-wise intake scaffold for a design family.
 
@@ -184,12 +244,27 @@ def render_brief(
     the caller skips any clarifying field whose answer is already covered).
     Used by the Landing Page family; Survey Funnel leaves it off and gets the
     classic flat intake described inline below.
+
+    When `strict_script=True` the clarifying-field block is prefaced with a
+    STRICT QUESTION SCRIPT preamble and each field is rendered with VERBATIM
+    question text + option list. This stops the caller's Claude from inventing
+    or rephrasing questions — the rendered brief becomes a fixed script rather
+    than a soft guideline. Used by the Landing Page family.
     """
     ref_block = ""
     if references:
         ref_block = "References:\n" + "\n".join(f"  - {r}" for r in references) + "\n\n"
 
-    field_lines = "\n".join(_render_field_line(cf) for cf in clarifying_fields)
+    if strict_script:
+        field_lines = "\n\n".join(
+            _render_field_line_strict(cf, i + 1)
+            for i, cf in enumerate(clarifying_fields)
+        )
+        fields_header = _STRICT_SCRIPT_PREAMBLE + "Clarifying fields — STRICT SCRIPT (use each VERBATIM):"
+    else:
+        field_lines = "\n".join(_render_field_line(cf) for cf in clarifying_fields)
+        fields_header = "Clarifying fields (key — question if missing):"
+
     defaults_lines = "\n".join(f"  - {k}: {v}" for k, v in defaults.items())
     sanity_line = " · ".join(sanity_check_items)
 
@@ -210,7 +285,7 @@ User's opening brief:
 
 {intake_block}
 
-Clarifying fields (key — question if missing):
+{fields_header}
 {field_lines}
 
 Defaults (speed-mode + any field left missing):

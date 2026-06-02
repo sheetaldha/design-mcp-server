@@ -177,6 +177,7 @@ def _build_instructions(
         defaults=LANDING_PAGE_DEFAULTS,
         sanity_check_items=_SANITY_CHECK_ITEMS,
         enable_brief_first_branching=True,
+        strict_script=True,
     )
 
 
