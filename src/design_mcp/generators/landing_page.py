@@ -209,6 +209,42 @@ def make_design_brief(
 
 
 # ---------------------------------------------------------------------------
+# Server-driven intake — short directive paired with `next_question` payloads
+# ---------------------------------------------------------------------------
+
+# Tight imperative that replaces the long prose `instructions` blob once the
+# server owns the question flow. Each `next_question` returned by
+# `design_landing_page` / `submit_clarifying_answer` carries the verbatim
+# text + options the caller's Claude must surface — this directive only
+# tells it WHICH tool to use and WHEN to advance.
+INSTRUCTIONS_SHORT = (
+    "INTAKE FLOW: This server controls the clarifying-question flow. For each "
+    "`next_question` returned:\n"
+    "- If `is_checkpoint=false`: call AskUserQuestion with `question_text` and "
+    "`options` EXACTLY as given (verbatim, in order, no rephrasing). "
+    "If `options` is null, ask as plain text.\n"
+    "- If `is_checkpoint=true`: render the `checkpoint_payload` as a ✅/❓ "
+    "summary message in chat (NOT AskUserQuestion). Wait for user reply.\n"
+    "\n"
+    "After the user answers, call "
+    "`submit_clarifying_answer(design_id, field_key, answer)`. The response "
+    "includes the NEXT `next_question`, or `null` when intake is complete.\n"
+    "\n"
+    "When `next_question` is `null`, proceed to STEP 2 (outline) per the "
+    "existing contract (see `instructions_legacy` for the full runbook)."
+)
+
+
+def landing_page_field_list():
+    """Return the canonical clarifying-field list (used by the state machine).
+
+    Module-public accessor so ``server.py`` doesn't have to reach into the
+    underscore-prefixed module attribute directly.
+    """
+    return _CLARIFYING_FIELDS
+
+
+# ---------------------------------------------------------------------------
 # HTML renderer (retained for fallback / preview / future validation use)
 # ---------------------------------------------------------------------------
 
