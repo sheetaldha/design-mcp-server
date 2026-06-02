@@ -90,7 +90,11 @@ jobs:
 
       - name: Smoke test public endpoint
         run: |
-          code=$(curl -fsS -o /dev/null -w "%{http_code}" --max-time 10 https://design-mcp.leadloom.com.au/ || echo "000")
+          # Drop -f flag: it makes curl exit non-zero on 4xx/5xx, which corrupts
+          # $code by concatenating the actual code with "000" from the fallback.
+          # Without -f, curl always exits 0 for any HTTP response (only true
+          # connection errors → exit 7 → fall to "000").
+          code=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 10 https://design-mcp.leadloom.com.au/ || echo "000")
           echo "HTTP status: $code"
           case "$code" in
             200|301|302|307|308|400|401|403|404|405)
