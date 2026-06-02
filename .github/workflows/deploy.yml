@@ -75,6 +75,17 @@ jobs:
             src/design_mcp/ \
             ubuntu@13.238.39.183:/home/ubuntu/design-mcp-server/src/design_mcp/
 
+      - name: Stamp deployed SHA on EC2
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          # Written BEFORE PM2 restart so design_mcp/__init__.py reads
+          # the fresh value on next import. design_ping surfaces this as
+          # part of the `version` field — e.g. "0.0.1+ae2c1a9" — so we
+          # can confirm in claude.ai that a deploy actually landed.
+          ssh -i ~/.ssh/id_ed25519 ubuntu@13.238.39.183 \
+            "echo '$DEPLOY_SHA' > /home/ubuntu/design-mcp-server/.deployed-sha"
+
       - name: Install any new Python dependencies on EC2
         run: |
           ssh -i ~/.ssh/id_ed25519 ubuntu@13.238.39.183 \
