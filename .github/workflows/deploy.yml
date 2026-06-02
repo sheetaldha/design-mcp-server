@@ -94,4 +94,5 @@ jobs:
           esac
 
       - name: Record deployed commit
-        run: echo "Deployed commit: $GITHUB_SHA"
+        run: |
+          echo "Deployed commit: $GITHUB_SHA"
