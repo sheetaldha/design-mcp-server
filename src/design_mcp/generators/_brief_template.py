@@ -1,7 +1,7 @@
 """Shared instructions scaffold for design family briefs.
 
 The caller's chat session reads the `instructions` string returned by
-`design_landing_page` / `design_survey_funnel` and follows it like a runbook.
+`start_landing_page_intake` / `start_survey_funnel_intake` and follows it like a runbook.
 Both families share a 6-step intake (acknowledge + clarify -> outline ->
 generate -> preview -> iterate -> submit). Only the clarifying fields, the
 per-family defaults, and the family-specific contract notes differ.

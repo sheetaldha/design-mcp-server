@@ -30,7 +30,7 @@ from design_mcp.preview import (  # noqa: E402
 )
 from design_mcp.server import (  # noqa: E402
     AuthContextError,
-    design_landing_page,
+    start_landing_page_intake,
     get_preview_url,
 )
 

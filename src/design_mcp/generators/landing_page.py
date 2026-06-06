@@ -214,7 +214,7 @@ def make_design_brief(
 
 # Tight imperative that replaces the long prose `instructions` blob once the
 # server owns the question flow. Each `next_question` returned by
-# `design_landing_page` / `submit_clarifying_answer` carries the verbatim
+# `start_landing_page_intake` / `submit_clarifying_answer` carries the verbatim
 # text + options the caller's Claude must surface — this directive only
 # tells it WHICH tool to use and WHEN to advance.
 INSTRUCTIONS_SHORT = (
