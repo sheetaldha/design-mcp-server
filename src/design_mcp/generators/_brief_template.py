@@ -2,9 +2,10 @@
 
 The caller's chat session reads the `instructions` string returned by
 `start_landing_page_intake` / `start_survey_funnel_intake` and follows it like a runbook.
-Both families share a 6-step intake (acknowledge + clarify -> outline ->
-generate -> preview -> iterate -> submit). Only the clarifying fields, the
-per-family defaults, and the family-specific contract notes differ.
+Both families share a 7-step intake (acknowledge + clarify -> outline ->
+generate -> mandatory preview -> checklist -> iterate -> submit). Only the
+clarifying fields, the per-family defaults, and the family-specific contract
+notes differ.
 
 Output is checklist-first: every status / outline / preview / error /
 submit moment renders as a tight ✅/❌/❓ list. Prose stays only inside
@@ -307,7 +308,7 @@ def render_brief(
 User's opening brief:
   "{brief}"
 
-{ref_block}Six steps, in order. No HTML before the user has approved a written outline.
+{ref_block}Seven steps, in order. No HTML before the user has approved a written outline.
 
 {intake_block}
 
@@ -338,7 +339,33 @@ STEP 3 — Generate.
 {family_contract_notes}
 Keep `seo.title` bare and ≤60 chars on the manifest. Rendered `<title>` MUST be `{{title}} | {{site_name}}` (suffix only here — rendered title lands ≤75 chars). og:title, twitter:title, JSON-LD `name`/`headline` stay BARE (no suffix). Also emit `<meta property="og:url" content="{{canonical_url}}">` and include `"url": "{{canonical_url}}"` in the JSON-LD WebPage object alongside `name` and `description`. Lead form posts to `/api/add-lead`. Validate the manifest against the schema; fix anything that would fail.
 
-STEP 4 — Preview as checklist, not raw HTML.
+### STEP 4: PREVIEW THE GENERATED PAGE — MANDATORY, NO EXCEPTIONS
+
+After generating the HTML and before asking the user what to do next, you
+MUST do BOTH of the following in the same message:
+
+1. **Render the page inline in chat.** Use claude.ai's HTML preview rendering
+   (the same mechanism that shows artifacts inline) so the user can see the
+   design without taking any action. Do not summarize the page verbally
+   instead of rendering — the user wants to SEE it, not read about it.
+
+2. **Surface the browser-openable preview URL.** Call `get_preview_url(design_id)`
+   immediately and include the returned URL in the same message. This gives
+   the user a way to open the design on any device (mobile, tablet, second
+   monitor) — critical for landing page work where the visual is the product.
+
+The next message you send to the user MUST contain BOTH (1) the inline render
+AND (2) the get_preview_url result. Only after that, on the FOLLOWING turn or
+in the same message AFTER the preview, ask "Submit / Iterate / Scrap?"
+
+Do NOT:
+- Skip the inline render because "it's a long page" — show it anyway.
+- Skip get_preview_url because of approval friction — the user explicitly
+  asked for the link.
+- Ask "want to see the page?" — just show it. The user wants zero friction.
+- Render only and forget the URL — the user wants BOTH ways to see it.
+
+STEP 5 — Preview as checklist, not raw HTML.
 ```
 Generated:
 ✅ Title (<X>/60 bare): "..." | site_name="..."
@@ -354,10 +381,10 @@ Next: **Submit** · **Iterate** · **Scrap**. Or say "show me the html" to paste
 ```
 Preview needs html persisted: run submit_design(..., publish=False) first, then get_preview_url.
 
-STEP 5 — Iterate.
-update_design(design_id=<id>, instructions=<feedback>). Regenerate, loop to STEP 4 with new checklist + fresh get_preview_url link, then ALWAYS append: `Any further improvements, or this looks final?` Never auto-exit; even on "looks good", probe once before STEP 6. Scrap: cancel_design(design_id=<id>, reason=<reason>).
+STEP 6 — Iterate.
+update_design(design_id=<id>, instructions=<feedback>). Regenerate, loop to STEP 4 (mandatory inline render + get_preview_url) then STEP 5 with new checklist + fresh get_preview_url link, then ALWAYS append: `Any further improvements, or this looks final?` Never auto-exit; even on "looks good", probe once before STEP 7. Scrap: cancel_design(design_id=<id>, reason=<reason>).
 
-STEP 6 — Submit guard.
+STEP 7 — Submit guard.
 Affirmatives: `yes`, `submit`, `ship it`, `go ahead`, `approved`. Before submit_design(publish=True): if the user has NEITHER seen a get_preview_url result earlier NOR said they viewed it elsewhere, respond verbatim:
 ```
 ⚠️ Hold on — you haven't viewed the actual HTML yet.
