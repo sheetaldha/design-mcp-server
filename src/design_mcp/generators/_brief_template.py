@@ -69,6 +69,10 @@ LANDING_PAGE_DEFAULTS: dict[str, str] = {
     "site_name": "Acquirely",
     "site_brief": "(none provided — full intake will run)",
     "primary_cta": "Get started",
+    # Speed-mode defaults to the icon-only path so we never silently fabricate
+    # Pexels / Unsplash URLs. Operators who want photos explicitly answer the
+    # images_choice clarifying question.
+    "images_choice": "No — clean modern look with icons + gradients only",
     "palette": "modern blue (#2563eb primary, slate text)",
     "benefits": "three differentiated value props",
     "tone": "friendly + professional",
@@ -140,6 +144,28 @@ The clarifying questions below are a FIXED SCRIPT, not suggestions. Treat them l
 7. **CLARIFY ONLY AFTER ANSWER.** If a user's response to a defined question is unclear, you may ask ONE follow-up in your own words — but only after the original question has been answered or explicitly skipped. Never pre-emptively split a defined question into multiple ones.
 
 Why this matters: operators are non-technical and rely on a predictable, repeatable flow. Each invented question or reworded option erodes trust and makes batches inconsistent. The script below is the contract.
+
+IMAGE & ICON RULES — NEVER FABRICATE.
+
+The server now owns image + icon sourcing. The prod bug that triggered this rule: Claude was hallucinating Unsplash URLs that resolved to irrelevant photos (e.g. football stadiums for "lead generation"). New contract:
+
+1. **NEVER write inline `<svg>` markup for icons.** For every icon in the design, call `fetch_icons` (during initial HTML generation) or `search_icons` (during iteration when the user wants alternatives). Icons come from the Iconify / Lucide library as real SVG markup the server hands back.
+2. **NEVER fabricate Pexels or Unsplash photo URLs.** For every `<img>` tag with an external photo, the URL must come from one of:
+   - `search_stock_images` — call this during HTML generation, render the 6 returned candidates via AskUserQuestion (with thumbnail previews), embed the user's pick verbatim;
+   - URLs the user pasted in chat — reuse them verbatim, no edits to the URL.
+3. **Allowed exceptions:** data URIs for tiny inline graphics (favicons, decorative gradients), CSS `background: linear-gradient(...)` blocks, logo URLs the user explicitly provided.
+4. **Required attribution for Pexels images:** render `Photo by <photographer>` (link to `photographer_url`) inside the image's `alt` text AND include a footer fine-print line: `Photos via <a href="https://pexels.com">Pexels</a>`. The `attribution_note` field returned by `search_stock_images` repeats this rule.
+
+IMAGE FLOW — driven by the `images_choice` clarifying answer:
+
+- `images_choice` = "Yes — I'll paste image URLs in chat now"
+  After STEP 1 intake finishes, BEFORE generating HTML, prompt the user verbatim: "Paste your image URLs in chat now. Tell me which slot each goes to (hero, card 1, card 2, etc). I'll wait for you to paste them before generating." Wait for the paste. Embed each URL verbatim in the matching slot. Do NOT auto-substitute or alter the URLs.
+
+- `images_choice` = "Yes — search free Pexels stock photos for me"
+  During HTML generation, for each photo slot (hero, feature cards, sections), call `search_stock_images(query=<slot-specific keyword>)`. Render the 6 returned candidates as an AskUserQuestion with thumbnail previews and the photographer's name. User picks 1. Embed that URL + alt text + photographer attribution.
+
+- `images_choice` = "No — clean modern look with icons + gradients only"
+  Generate HTML with SVG icons (always via `fetch_icons`) plus CSS gradient placeholders for any photo-shaped slots. NO `<img>` tags except a logo URL the user explicitly provided in clarifying answers.
 
 """
 

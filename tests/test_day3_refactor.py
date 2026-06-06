@@ -603,11 +603,12 @@ class TestInstructionsUX:
         # block + new clarifying fields (site_brief, review_checkpoint, gtm_tag)
         # + (c) the STRICT QUESTION SCRIPT preamble & per-field VERBATIM
         # rendering that stops the caller's Claude from inventing or
-        # rephrasing clarifying questions, the landing brief now lands
-        # ~2100 words. Ceiling bumped to 2200 to keep small headroom for
-        # one more curated option list without forcing a trim.
+        # rephrasing clarifying questions + (d) the IMAGE & ICON RULES block
+        # plus the `images_choice` curated field that drives Pexels / Iconify
+        # server-controlled image sourcing, the landing brief now lands
+        # ~2600 words. Ceiling bumped to 2700 to keep small headroom.
         word_count = len(text.split())
-        assert word_count <= 2200, f"[{family}] instructions are {word_count} words; ceiling 2200"
+        assert word_count <= 2700, f"[{family}] instructions are {word_count} words; ceiling 2700"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -1606,14 +1607,35 @@ class TestLandingPageClarifyingFieldsRewrite:
         assert _CLARIFYING_FIELDS[2].suggested_options is None
         assert _CLARIFYING_FIELDS[2].is_checkpoint is False
 
-    def test_review_checkpoint_is_at_position_5_and_flagged_is_checkpoint(self):
+    def test_images_choice_is_at_position_5(self):
+        """images_choice was inserted at position 5 (between primary_cta and
+        review_checkpoint) to drive the server-controlled image-sourcing
+        flow that stops Claude from fabricating Unsplash / Pexels URLs."""
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert _CLARIFYING_FIELDS[4].key == "review_checkpoint"
-        assert _CLARIFYING_FIELDS[4].is_checkpoint is True
+        assert _CLARIFYING_FIELDS[4].key == "images_choice"
+        assert _CLARIFYING_FIELDS[4].suggested_options is not None
+        assert list(_CLARIFYING_FIELDS[4].suggested_options) == [
+            "Yes — I'll paste image URLs in chat now",
+            "Yes — search free Pexels stock photos for me",
+            "No — clean modern look with icons + gradients only",
+        ]
+        assert _CLARIFYING_FIELDS[4].is_checkpoint is False
 
-    def test_gtm_tag_is_at_position_9(self):
+    def test_review_checkpoint_is_at_position_6_and_flagged_is_checkpoint(self):
+        """review_checkpoint shifted from 5 to 6 when images_choice landed."""
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert _CLARIFYING_FIELDS[8].key == "gtm_tag"
+        assert _CLARIFYING_FIELDS[5].key == "review_checkpoint"
+        assert _CLARIFYING_FIELDS[5].is_checkpoint is True
+
+    def test_gtm_tag_is_at_position_10(self):
+        """gtm_tag shifted from 9 to 10 when images_choice landed."""
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        assert _CLARIFYING_FIELDS[9].key == "gtm_tag"
+
+    def test_total_field_count_is_twelve(self):
+        """11 → 12 fields after images_choice insertion."""
+        from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
+        assert len(_CLARIFYING_FIELDS) == 12
 
     def test_audience_dropped_from_clarifying_fields(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
@@ -1911,6 +1933,7 @@ class TestSubmitClarifyingAnswer:
             ("site_name", "HealthBoost"),
             ("site_brief", "uploaded paste"),
             ("primary_cta", "Get started"),
+            ("images_choice", "No — clean modern look with icons + gradients only"),
             ("review_checkpoint", "looks good"),
             ("palette", "modern blue"),
             ("benefits", "fast, accurate, cheap"),
@@ -1943,6 +1966,7 @@ class TestSubmitClarifyingAnswer:
             ("site_name", "HealthBoost"),
             ("site_brief", "x"),
             ("primary_cta", "Get started"),
+            ("images_choice", "No — clean modern look with icons + gradients only"),
         ]:
             submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
         # Sanity: next question is the checkpoint.
@@ -1966,6 +1990,7 @@ class TestSubmitClarifyingAnswer:
             ("site_name", "HealthBoost"),
             ("site_brief", "x"),
             ("primary_cta", "Get started"),
+            ("images_choice", "No — clean modern look with icons + gradients only"),
         ]:
             submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
         result = submit_clarifying_answer(
@@ -2006,6 +2031,7 @@ class TestGetNextQuestion:
         # Skip every regular field, advance the checkpoint.
         for key in [
             "page_intent", "site_name", "site_brief", "primary_cta",
+            "images_choice",
         ]:
             submit_clarifying_answer(design_id=design_id, field_key=key, answer="skip")
         submit_clarifying_answer(
