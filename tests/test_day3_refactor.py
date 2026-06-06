@@ -2,7 +2,7 @@
 auth-derived user_email.
 
 Covers:
-- design_landing_page returns the expected structured brief shape
+- start_landing_page_intake returns the expected structured brief shape
 - drafts.create / get / update / set_status / set_last_error / cleanup_expired work
 - Cross-user isolation: user A's design_id is invisible to user B
 - create() persists user_email
@@ -61,7 +61,7 @@ from design_mcp import server as server_mod  # noqa: E402
 from design_mcp.server import (  # noqa: E402
     AuthContextError,
     cancel_design,
-    design_landing_page,
+    start_landing_page_intake,
     get_design_status,
     submit_design,
     update_design,
@@ -432,12 +432,12 @@ class TestAuthContext:
 
 
 # ---------------------------------------------------------------------------
-# design_landing_page (return-prompts entry tool)
+# start_landing_page_intake (return-prompts entry tool)
 # ---------------------------------------------------------------------------
 
 class TestDesignLandingPage:
     def test_returns_expected_keys(self):
-        result = design_landing_page(brief="Healthboost UAT, fresh greens, premium tone")
+        result = start_landing_page_intake(brief="Healthboost UAT, fresh greens, premium tone")
         expected = {
             "design_id",
             "family",
@@ -462,7 +462,7 @@ class TestDesignLandingPage:
         assert record.user_email == DEFAULT_USER
 
     def test_slug_hint_used_when_provided(self):
-        result = design_landing_page(brief="anything", slug="my-custom-slug")
+        result = start_landing_page_intake(brief="anything", slug="my-custom-slug")
         assert result["slug_hint"] == "my-custom-slug"
 
 
@@ -514,9 +514,9 @@ _SHARED_REQUIRED_PHRASES = [
 
 def _instructions_for(family: str, brief: str) -> str:
     if family == "landing-page":
-        from design_mcp.server import design_landing_page as _entry
+        from design_mcp.server import start_landing_page_intake as _entry
     elif family == "survey-funnel":
-        from design_mcp.server import design_survey_funnel as _entry
+        from design_mcp.server import start_survey_funnel_intake as _entry
     else:  # pragma: no cover - sanity guard
         raise ValueError(family)
     return _entry(brief=brief)["instructions"]
@@ -696,7 +696,7 @@ def _await_terminal(design_id: str, user_email: str, *, timeout: float = 5.0) ->
 
 class TestSubmitDesign:
     def test_publish_true_returns_submitting_then_publishes(self, temp_design_repo):
-        brief_resp = design_landing_page(brief="Test brief for submit")
+        brief_resp = start_landing_page_intake(brief="Test brief for submit")
         design_id = brief_resp["design_id"]
         manifest = _valid_manifest()
         html = _valid_html()
@@ -735,7 +735,7 @@ class TestSubmitDesign:
 
         monkeypatch.setattr("design_mcp.server.publish_design", slow_publish)
 
-        brief_resp = design_landing_page(brief="async timing check")
+        brief_resp = start_landing_page_intake(brief="async timing check")
         design_id = brief_resp["design_id"]
 
         async def go():
@@ -761,7 +761,7 @@ class TestSubmitDesign:
 
         monkeypatch.setattr("design_mcp.server.publish_design", boom)
 
-        brief_resp = design_landing_page(brief="failure-path coverage")
+        brief_resp = start_landing_page_intake(brief="failure-path coverage")
         design_id = brief_resp["design_id"]
 
         async def go():
@@ -791,7 +791,7 @@ class TestSubmitDesign:
 
         monkeypatch.setattr("design_mcp.server.publish_design", boom)
 
-        brief_resp = design_landing_page(brief="truncate check")
+        brief_resp = start_landing_page_intake(brief="truncate check")
         design_id = brief_resp["design_id"]
 
         async def go():
@@ -822,7 +822,7 @@ class TestSubmitDesign:
 
         monkeypatch.setattr("design_mcp.server.publish_design", spy_publish)
 
-        brief_resp = design_landing_page(brief="Author check")
+        brief_resp = start_landing_page_intake(brief="Author check")
         design_id = brief_resp["design_id"]
 
         async def go():
@@ -840,7 +840,7 @@ class TestSubmitDesign:
         assert captured["user_email"] == DEFAULT_USER
 
     def test_publish_false_marks_submitted_only_and_skips_background(self, temp_design_repo, monkeypatch):
-        brief_resp = design_landing_page(brief="Preview only brief")
+        brief_resp = start_landing_page_intake(brief="Preview only brief")
         design_id = brief_resp["design_id"]
 
         called = {"count": 0}
@@ -865,7 +865,7 @@ class TestSubmitDesign:
         assert drafts.get(design_id, DEFAULT_USER).status == "submitted"
 
     def test_invalid_manifest_returns_structured_errors(self):
-        brief_resp = design_landing_page(brief="Will fail validation")
+        brief_resp = start_landing_page_intake(brief="Will fail validation")
         design_id = brief_resp["design_id"]
         bad = _valid_manifest()
         # Only 2 features — contract requires exactly 3.
@@ -880,7 +880,7 @@ class TestSubmitDesign:
         assert drafts.get(design_id, DEFAULT_USER).status == "drafted"
 
     def test_html_missing_h1_returns_error(self):
-        brief_resp = design_landing_page(brief="Missing h1 brief")
+        brief_resp = start_landing_page_intake(brief="Missing h1 brief")
         design_id = brief_resp["design_id"]
         result = _submit(
             design_id=design_id,
@@ -906,7 +906,7 @@ class TestSubmitDesign:
         """Design created by user A is invisible to user B at submit_design."""
         # Alice creates a draft.
         with _set_user("alice@x.com"):
-            brief = design_landing_page(brief="Alice's brief")
+            brief = start_landing_page_intake(brief="Alice's brief")
             design_id = brief["design_id"]
 
         # Bob attempts to submit_design against Alice's design_id.
@@ -931,7 +931,7 @@ class TestSubmitDesign:
 
 class TestIterationTools:
     def test_update_design_returns_iteration_instructions(self):
-        brief_resp = design_landing_page(brief="Iteration baseline")
+        brief_resp = start_landing_page_intake(brief="Iteration baseline")
         design_id = brief_resp["design_id"]
         result = update_design(design_id, instructions="Use a warmer palette and drop the trust badges")
         assert result["ok"] is True
@@ -941,7 +941,7 @@ class TestIterationTools:
         assert "manifest_schema" in result and result["manifest_schema"]
 
     def test_get_design_status_returns_record_and_summary(self):
-        brief_resp = design_landing_page(brief="Status check")
+        brief_resp = start_landing_page_intake(brief="Status check")
         design_id = brief_resp["design_id"]
         result = get_design_status(design_id)
         assert result["ok"] is True
@@ -951,7 +951,7 @@ class TestIterationTools:
     def test_get_design_status_returns_full_lifecycle_shape(self):
         """Async-submit polling expects status, last_error, commit_sha, design_dir,
         published_repo_sha, manifest_valid, iteration_count, ISO timestamps."""
-        brief_resp = design_landing_page(brief="Lifecycle shape check")
+        brief_resp = start_landing_page_intake(brief="Lifecycle shape check")
         design_id = brief_resp["design_id"]
         result = get_design_status(design_id)
         assert result["ok"] is True
@@ -978,7 +978,7 @@ class TestIterationTools:
             raise RuntimeError("repo unreachable")
         monkeypatch.setattr("design_mcp.server.publish_design", boom)
 
-        brief_resp = design_landing_page(brief="surface last_error")
+        brief_resp = start_landing_page_intake(brief="surface last_error")
         design_id = brief_resp["design_id"]
 
         async def go():
@@ -1000,7 +1000,7 @@ class TestIterationTools:
 
     def test_get_design_status_cross_user_returns_not_found(self):
         with _set_user("alice@x.com"):
-            brief = design_landing_page(brief="Alice's status check")
+            brief = start_landing_page_intake(brief="Alice's status check")
             design_id = brief["design_id"]
         with _set_user("bob@x.com"):
             result = get_design_status(design_id)
@@ -1008,7 +1008,7 @@ class TestIterationTools:
         assert any("not owned by this user" in e for e in result["errors"])
 
     def test_cancel_design_marks_cancelled_and_retains_record(self):
-        brief_resp = design_landing_page(brief="To be cancelled")
+        brief_resp = start_landing_page_intake(brief="To be cancelled")
         design_id = brief_resp["design_id"]
         result = cancel_design(design_id, reason="user changed their mind")
         assert result["ok"] is True
@@ -1020,7 +1020,7 @@ class TestIterationTools:
 
     def test_cancel_design_cross_user_blocked(self):
         with _set_user("alice@x.com"):
-            brief = design_landing_page(brief="Cant be cancelled by Bob")
+            brief = start_landing_page_intake(brief="Cant be cancelled by Bob")
             design_id = brief["design_id"]
         with _set_user("bob@x.com"):
             result = cancel_design(design_id, reason="malicious")
@@ -1031,14 +1031,14 @@ class TestIterationTools:
 
     def test_update_design_cross_user_blocked(self):
         with _set_user("alice@x.com"):
-            brief = design_landing_page(brief="Alice iteration")
+            brief = start_landing_page_intake(brief="Alice iteration")
             design_id = brief["design_id"]
         with _set_user("bob@x.com"):
             result = update_design(design_id, instructions="hijack")
         assert result["ok"] is False
 
     def test_cancel_after_publish_is_rejected(self, temp_design_repo):
-        brief_resp = design_landing_page(brief="Cant cancel after publish")
+        brief_resp = start_landing_page_intake(brief="Cant cancel after publish")
         design_id = brief_resp["design_id"]
 
         async def go():
@@ -1761,7 +1761,7 @@ class TestStrictQuestionScript:
 
 # ---------------------------------------------------------------------------
 # Server-driven clarifying-question state machine — new in this feature.
-# The `design_landing_page` response now includes `next_question`,
+# The `start_landing_page_intake` response now includes `next_question`,
 # `instructions_short`, and `instructions_legacy`; a new tool
 # `submit_clarifying_answer` advances the state and returns the next
 # question (or null when intake is complete).
@@ -1775,7 +1775,7 @@ from design_mcp.server import (  # noqa: E402
 
 class TestDesignLandingPageServerDrivenIntake:
     def test_response_carries_instructions_short(self):
-        result = design_landing_page(brief="anything")
+        result = start_landing_page_intake(brief="anything")
         assert "instructions_short" in result
         text = result["instructions_short"]
         # ~80 words, give or take. Cap at 200 to guard against accidental bloat.
@@ -1788,7 +1788,7 @@ class TestDesignLandingPageServerDrivenIntake:
         assert "AskUserQuestion" in text
 
     def test_response_carries_instructions_legacy(self):
-        result = design_landing_page(brief="anything")
+        result = start_landing_page_intake(brief="anything")
         assert "instructions_legacy" in result
         # The legacy prose is the full runbook — must contain the old anchors.
         legacy = result["instructions_legacy"]
@@ -1796,7 +1796,7 @@ class TestDesignLandingPageServerDrivenIntake:
         assert "submit_design" in legacy
 
     def test_response_carries_first_next_question(self):
-        result = design_landing_page(brief="anything")
+        result = start_landing_page_intake(brief="anything")
         assert "next_question" in result
         nq = result["next_question"]
         assert nq is not None
@@ -1815,14 +1815,14 @@ class TestDesignLandingPageServerDrivenIntake:
         assert "VERBATIM" in nq["instruction_for_claude"]
 
     def test_next_action_directs_to_submit_clarifying_answer(self):
-        result = design_landing_page(brief="anything")
+        result = start_landing_page_intake(brief="anything")
         assert "submit_clarifying_answer" in result["next_action"]
         assert "page_intent" in result["next_action"]
 
     def test_survey_funnel_response_omits_next_question(self):
         """Survey funnel is out of scope for v1 — it still uses prose."""
-        from design_mcp.server import design_survey_funnel
-        result = design_survey_funnel(brief="anything")
+        from design_mcp.server import start_survey_funnel_intake
+        result = start_survey_funnel_intake(brief="anything")
         assert "next_question" not in result
         assert "instructions_short" not in result
 
@@ -1831,7 +1831,7 @@ class TestSubmitClarifyingAnswer:
     # Default empty brief: avoids the pre-populate-site_brief shortcut so
     # we test the linear state-machine walk from a clean slate.
     def _start(self, brief: str = "") -> str:
-        return design_landing_page(brief=brief)["design_id"]
+        return start_landing_page_intake(brief=brief)["design_id"]
 
     def test_first_answer_records_and_returns_next_question(self):
         design_id = self._start()
@@ -1982,7 +1982,7 @@ class TestSubmitClarifyingAnswer:
 class TestGetNextQuestion:
     def test_returns_first_question_for_fresh_draft(self):
         # Empty brief so site_brief is NOT pre-populated → collected_so_far is empty.
-        design_id = design_landing_page(brief="")["design_id"]
+        design_id = start_landing_page_intake(brief="")["design_id"]
         result = get_next_question(design_id=design_id)
         assert result["ok"] is True
         assert result["intake_complete"] is False
@@ -1990,7 +1990,7 @@ class TestGetNextQuestion:
         assert result["collected_so_far"] == {}
 
     def test_is_read_only_does_not_mutate_state(self):
-        design_id = design_landing_page(brief="")["design_id"]
+        design_id = start_landing_page_intake(brief="")["design_id"]
         before = drafts.get(design_id, DEFAULT_USER).clarifying_state
         get_next_question(design_id=design_id)
         get_next_question(design_id=design_id)
@@ -2002,7 +2002,7 @@ class TestGetNextQuestion:
         assert result["ok"] is False
 
     def test_returns_null_when_intake_complete(self):
-        design_id = design_landing_page(brief="")["design_id"]
+        design_id = start_landing_page_intake(brief="")["design_id"]
         # Skip every regular field, advance the checkpoint.
         for key in [
             "page_intent", "site_name", "site_brief", "primary_cta",
@@ -2026,7 +2026,7 @@ class TestBriefPrePopulatesSiteBrief:
     def test_nonempty_brief_pre_populates_site_brief(self):
         # Caller passed a brief — server should stash it as site_brief so the
         # user is NOT asked for it again during the clarifying flow.
-        design_id = design_landing_page(
+        design_id = start_landing_page_intake(
             brief="I need a page for my dental clinic in Sydney"
         )["design_id"]
         record = drafts.get(design_id, DEFAULT_USER)
@@ -2035,7 +2035,7 @@ class TestBriefPrePopulatesSiteBrief:
         )
 
     def test_empty_brief_does_not_pre_populate(self):
-        design_id = design_landing_page(brief="")["design_id"]
+        design_id = start_landing_page_intake(brief="")["design_id"]
         record = drafts.get(design_id, DEFAULT_USER)
         assert record.clarifying_state in (
             {},
@@ -2043,7 +2043,7 @@ class TestBriefPrePopulatesSiteBrief:
         )
 
     def test_whitespace_only_brief_does_not_pre_populate(self):
-        design_id = design_landing_page(brief="   \n  ")["design_id"]
+        design_id = start_landing_page_intake(brief="   \n  ")["design_id"]
         record = drafts.get(design_id, DEFAULT_USER)
         assert record.clarifying_state in (
             {},

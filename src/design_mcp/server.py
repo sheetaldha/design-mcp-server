@@ -8,8 +8,8 @@ microsite-design-skills repo, and tracks lifecycle in a draft store.
 
 Tools exposed:
     design_ping            — health check
-    design_landing_page    — kick off a landing-page draft (returns brief)
-    design_survey_funnel   — kick off a survey-funnel draft (returns brief)
+    start_landing_page_intake    — kick off a landing-page draft (returns brief)
+    start_survey_funnel_intake   — kick off a survey-funnel draft (returns brief)
     submit_design          — validate + commit a completed design
     update_design          — issue iteration instructions for a draft
     get_design_status      — inspect a draft
@@ -116,7 +116,7 @@ pre-interview the user under any circumstances.
 
 When the user expresses ANY intent to design a landing page (e.g. "design a
 landing page", "I want a page for my clinic", "start a new design"):
-1. Call `design_landing_page()` IMMEDIATELY with NO arguments.
+1. Call `start_landing_page_intake()` IMMEDIATELY with NO arguments.
 2. Render the returned `next_question` payload VERBATIM via AskUserQuestion
    (or as plain text for checkpoints).
 3. Call `submit_clarifying_answer(design_id, field_key, answer)` with the
@@ -135,13 +135,13 @@ The server asks ALL of these itself, with curated wording and curated
 multi-choice options. Asking them yourself BYPASSES the curated flow and
 gives the user a worse, inconsistent experience.
 
-Calling `design_landing_page()` with NO arguments is the correct invocation.
+Calling `start_landing_page_intake()` with NO arguments is the correct invocation.
 It does NOT immediately generate a page — it starts an interactive intake
 the server controls. The optional `brief` parameter is only for forwarding
 a descriptive sentence the user ALREADY typed UNPROMPTED; never prompt for
 it.
 
-Same rules apply to `design_survey_funnel()`.
+Same rules apply to `start_survey_funnel_intake()`.
 """
 
 mcp = FastMCP(
@@ -538,19 +538,19 @@ def design_ping() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# design_landing_page — return-prompts entrypoint
+# start_landing_page_intake — return-prompts entrypoint
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-def design_landing_page(
+def start_landing_page_intake(
     brief: str = "",
     references: Optional[list[str]] = None,
     slug: Optional[str] = None,
 ) -> dict:
-    """Start a Landing Page design. CALL WITH NO ARGUMENTS — the server asks everything.
+    """Kick off a Landing Page intake. CALL WITH NO ARGUMENTS — the server asks everything.
 
     ALL PARAMETERS ARE OPTIONAL. The normal invocation is
-    `design_landing_page()` with no arguments. The server runs a
+    `start_landing_page_intake()` with no arguments. The server runs a
     server-driven clarifying-question flow that asks the user every detail
     it needs (intent, brand, brief, CTA, palette, tone, etc.) — Claude does
     NOT need to gather any context before calling.
@@ -621,15 +621,15 @@ def design_landing_page(
 
 
 @mcp.tool()
-def design_survey_funnel(
+def start_survey_funnel_intake(
     brief: str = "",
     references: Optional[list[str]] = None,
     slug: Optional[str] = None,
 ) -> dict:
-    """Start a Survey Funnel design. CALL WITH NO ARGUMENTS — server asks everything.
+    """Kick off a Survey Funnel intake. CALL WITH NO ARGUMENTS — server asks everything.
 
     ALL PARAMETERS ARE OPTIONAL. The normal invocation is
-    `design_survey_funnel()` with no arguments. DO NOT pre-interview the
+    `start_survey_funnel_intake()` with no arguments. DO NOT pre-interview the
     user before calling this tool — no "what does the funnel qualify for",
     no "tone", no "OTP yes/no". Follow the `instructions` payload after
     calling.
@@ -642,7 +642,7 @@ def design_survey_funnel(
         slug: OPTIONAL slug override; server auto-generates otherwise.
 
     Returns:
-        Same shape as design_landing_page, but family="survey-funnel" and
+        Same shape as start_landing_page_intake, but family="survey-funnel" and
         manifest_schema is the SurveyFunnelManifest JSON schema.
     """
     user_email = resolve_user_email()
@@ -796,7 +796,7 @@ async def submit_design(
         and the status flips straight to "submitted" with no background work.
 
     Args:
-        design_id: the id returned by design_landing_page / design_survey_funnel
+        design_id: the id returned by start_landing_page_intake / start_survey_funnel_intake
         html: the full HTML5 document produced by the caller's Claude
         manifest: the parsed manifest dict (matches manifest_schema for the family)
         publish: when True (default) write + commit + push to microsite-design-skills
@@ -1135,7 +1135,7 @@ def _next_action_for(design_id: str, next_q: Optional[dict]) -> str:
     if next_q is None:
         return (
             "Intake complete. Proceed to STEP 2 (outline) per "
-            "instructions_legacy from the original design_landing_page "
+            "instructions_legacy from the original start_landing_page_intake "
             "response, then generate + submit_design."
         )
     return (
@@ -1159,7 +1159,7 @@ def submit_clarifying_answer(
     rejected so a stale chat session can't silently corrupt state.
 
     Args:
-        design_id: The draft id returned by design_landing_page.
+        design_id: The draft id returned by start_landing_page_intake.
         field_key: The field key from the most recent next_question
                    (e.g. "page_intent").
         answer:    The user's reply as a string. For multi-choice questions,

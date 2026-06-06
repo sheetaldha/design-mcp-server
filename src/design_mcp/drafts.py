@@ -1,7 +1,7 @@
 """PG-backed draft store for the return-prompts pattern.
 
 A DraftRecord tracks the lifecycle of a single design from the moment
-`design_landing_page` / `design_survey_funnel` hands the caller a brief,
+`start_landing_page_intake` / `start_survey_funnel_intake` hands the caller a brief,
 through the caller's Claude generating the HTML, until `submit_design`
 validates + commits, or `cancel_design` voids it.
 
