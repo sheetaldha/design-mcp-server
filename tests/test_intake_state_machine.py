@@ -319,12 +319,14 @@ class TestLandingPageFieldListIntegration:
         """Walk every non-checkpoint field with a stub answer, advance the
         checkpoint via 'continue', and confirm next_question returns None."""
         state: dict = {}
-        # Walk in order. Position 5 (index 4) is the checkpoint.
+        # Walk in order. Position 6 (index 5) is the checkpoint after
+        # images_choice was inserted at position 5.
         answers = {
             "page_intent": "New microsite landing page",
             "site_name": "HealthBoost",
             "site_brief": "uploaded brief paste",
             "primary_cta": "Get started",
+            "images_choice": "No — clean modern look with icons + gradients only",
             "palette": "modern blue",
             "benefits": "fast, accurate, cheap",
             "tone": "Friendly + casual",
@@ -334,6 +336,7 @@ class TestLandingPageFieldListIntegration:
         }
         ordered_keys = [
             "page_intent", "site_name", "site_brief", "primary_cta",
+            "images_choice",
             "review_checkpoint",  # checkpoint
             "palette", "benefits", "tone", "gtm_tag",
             "references_to_avoid", "optional_sections_content",
@@ -358,9 +361,12 @@ class TestLandingPageFieldListIntegration:
         for key, value in answers.items():
             assert state["collected"][key] == value
 
-    def test_checkpoint_position_is_five(self):
-        """The checkpoint sits at position 5 in the displayed flow (1-indexed)."""
-        # Walk past the four pre-checkpoint fields with real answers so the
+    def test_checkpoint_position_is_six(self):
+        """The checkpoint sits at position 6 in the displayed flow (1-indexed).
+
+        It moved from 5→6 when images_choice was inserted at position 5.
+        """
+        # Walk past the five pre-checkpoint fields with real answers so the
         # checkpoint comes up next.
         state: dict = {}
         for key, ans in [
@@ -368,10 +374,11 @@ class TestLandingPageFieldListIntegration:
             ("site_name", "HealthBoost"),
             ("site_brief", "x"),
             ("primary_cta", "Get started"),
+            ("images_choice", "No — clean modern look with icons + gradients only"),
         ]:
             state = sm.submit_answer(_CLARIFYING_FIELDS, state, key, ans)
         nq = sm.next_question(_CLARIFYING_FIELDS, state)
         assert nq.field_key == "review_checkpoint"
         assert nq.is_checkpoint is True
-        # Position counts the checkpoint itself (5 nodes walked so far).
-        assert nq.position == 5
+        # Position counts the checkpoint itself (6 nodes walked so far).
+        assert nq.position == 6

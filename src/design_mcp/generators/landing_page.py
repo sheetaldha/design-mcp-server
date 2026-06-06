@@ -71,17 +71,27 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Download / get the guide",
         "Contact us",
     ),
-    # 5. Review checkpoint — pseudo-field; no data collected
+    # 5. Images choice — drives the server-controlled image-sourcing flow.
+    # Stops Claude from fabricating Unsplash / Pexels URLs (the prod issue
+    # that triggered the Pexels + Iconify image bundle).
+    field(
+        "images_choice",
+        "Do you want images on this page?",
+        "Yes — I'll paste image URLs in chat now",
+        "Yes — search free Pexels stock photos for me",
+        "No — clean modern look with icons + gradients only",
+    ),
+    # 6. Review checkpoint — pseudo-field; no data collected
     field(
         "review_checkpoint",
         "Summary of everything collected so far + remaining questions — confirm or change?",
         is_checkpoint=True,
     ),
-    # 6. Palette
+    # 7. Palette
     field("palette", "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose."),
-    # 7. Benefits
+    # 8. Benefits
     field("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
-    # 8. Tone
+    # 9. Tone
     field(
         "tone",
         "Tone of voice?",
@@ -90,14 +100,14 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Playful + bold",
         "Authoritative + premium",
     ),
-    # 9. GTM tag
+    # 10. GTM tag
     field(
         "gtm_tag",
         "Google Tag Manager container ID to embed? Paste it (e.g. GTM-XXXXXXX) or skip.",
     ),
-    # 10. References to avoid
+    # 11. References to avoid
     field("references_to_avoid", "Anything to avoid? (competitor styles, forbidden words, imagery)"),
-    # 11. Optional sections
+    # 12. Optional sections
     field(
         "optional_sections_content",
         "Testimonials, FAQ, or trust badges? If yes: 2-6 testimonials "

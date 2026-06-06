@@ -38,6 +38,7 @@ from starlette.responses import HTMLResponse, RedirectResponse, Response
 
 from . import auth as auth_mod
 from . import drafts
+from . import images as images_mod
 from .auth import AuthError, hash_token, new_opaque_token
 from .config import DesignConfig, redact_url
 from .db import get_conn
@@ -1395,6 +1396,128 @@ async def fetch_url_screenshots(url: str) -> dict:
         "desktop": {"url": results["desktop"].url, "viewport": "1440x900", "provider": results["desktop"].provider},
         "cached":  results["mobile"].cached,
     }
+
+
+# ---------------------------------------------------------------------------
+# search_stock_images / fetch_icons / search_icons — server-controlled image
+# sourcing. Stops Claude from fabricating Unsplash / Pexels photo URLs (the
+# prod issue: hallucinated football stadiums for "lead generation") and from
+# writing inline <svg> markup for icons.
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def search_stock_images(
+    query: str,
+    count: int = 6,
+    orientation: str = "landscape",
+) -> dict:
+    """Search Pexels for stock photos matching a keyword. Returns 6 real
+    candidates with URLs, photographer credit, alt text, and source link.
+
+    NEVER fabricate Pexels or Unsplash URLs in HTML. ALWAYS call this tool
+    to get real, working image URLs for any image slot in the design.
+
+    Args:
+        query: search keywords (e.g. "lead generation marketing")
+        count: 1-15, defaults to 6
+        orientation: "landscape" | "portrait" | "square"
+
+    Returns:
+        {
+          "query": <echoed>,
+          "results": [
+            {
+              "id": <pexels_id>,
+              "url_large": "https://images.pexels.com/photos/.../large.jpg",
+              "url_medium": "https://images.pexels.com/photos/.../medium.jpg",
+              "photographer": "Name",
+              "photographer_url": "https://pexels.com/@...",
+              "alt": "<description>",
+              "source": "https://pexels.com/photo/..."
+            },
+            ...
+          ],
+          "attribution_note": "Pexels requires linking to Pexels.com somewhere
+                              on the live page; render in footer fine print."
+        }
+    """
+    # Auth context is required so we don't expose the upstream API key as
+    # an open relay. resolve_user_email raises on unauthenticated callers.
+    resolve_user_email()
+    try:
+        return images_mod.search_stock_images(
+            query=query, count=count, orientation=orientation,
+        )
+    except images_mod.ImagesError as exc:
+        log.error("search_stock_images failed: %s", exc)
+        raise RuntimeError(str(exc)) from exc
+
+
+@mcp.tool()
+def fetch_icons(
+    slots: dict,
+    color: str = "#0F2A4A",
+    size: int = 48,
+) -> dict:
+    """Fetch SVG icons for multiple slots in one call from Lucide via Iconify.
+    Call this DURING initial HTML generation to embed real icons.
+
+    NEVER write inline <svg> markup for icons. ALWAYS call this tool.
+
+    Args:
+        slots: {"hero_badge": "verified secure", "feature_1": "fast delivery", ...}
+               keys are arbitrary slot names; values are search keywords
+        color: hex color (with #, e.g. "#0F2A4A") — bakes into stroke/fill
+        size: pixels (square)
+
+    Returns:
+        {
+          "icons": {
+            "hero_badge": {
+              "icon_id": "lucide:shield-check",
+              "svg": "<svg ...>...</svg>"  # ready to inline
+            },
+            ...
+          }
+        }
+    """
+    resolve_user_email()
+    try:
+        return images_mod.fetch_icons(slots=slots, color=color, size=size)
+    except images_mod.ImagesError as exc:
+        log.error("fetch_icons failed: %s", exc)
+        raise RuntimeError(str(exc)) from exc
+
+
+@mcp.tool()
+def search_icons(query: str, count: int = 8) -> dict:
+    """Search Iconify for icon alternatives matching a keyword. Use DURING
+    ITERATION when user wants to swap a specific icon (e.g. "change the
+    verified icon, show alternatives"). Returns candidates Claude can render
+    as AskUserQuestion options.
+
+    Args:
+        query: search keywords
+        count: 1-20
+
+    Returns:
+        {
+          "results": [
+            {
+              "icon_id": "lucide:shield-check",
+              "preview_url": "https://api.iconify.design/lucide:shield-check.svg?width=24",
+              "svg": "<svg ...>...</svg>"  # full SVG for embedding
+            },
+            ...
+          ]
+        }
+    """
+    resolve_user_email()
+    try:
+        return images_mod.search_icons(query=query, count=count)
+    except images_mod.ImagesError as exc:
+        log.error("search_icons failed: %s", exc)
+        raise RuntimeError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
