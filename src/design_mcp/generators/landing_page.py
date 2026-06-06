@@ -154,7 +154,7 @@ def sanity_check_items_for_manifest(manifest: LandingPageManifest) -> list[str]:
     """Return the static sanity-check items PLUS per-section data items
     conditional on `manifest.optional_sections`.
 
-    Used by callers that want the post-generation checklist (STEP 4) to spell
+    Used by callers that want the post-generation checklist (STEP 5) to spell
     out the per-section counts. The brief itself uses the static list because
     it is rendered before a manifest exists.
     """

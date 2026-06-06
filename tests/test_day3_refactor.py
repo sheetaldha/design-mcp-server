@@ -605,10 +605,12 @@ class TestInstructionsUX:
         # rendering that stops the caller's Claude from inventing or
         # rephrasing clarifying questions + (d) the IMAGE & ICON RULES block
         # plus the `images_choice` curated field that drives Pexels / Iconify
-        # server-controlled image sourcing, the landing brief now lands
-        # ~2600 words. Ceiling bumped to 2700 to keep small headroom.
+        # server-controlled image sourcing + (e) the mandatory-preview STEP
+        # forcing inline render + get_preview_url after HTML generation, the
+        # landing brief now lands ~2800 words. Ceiling bumped to 2950 to keep
+        # small headroom.
         word_count = len(text.split())
-        assert word_count <= 2700, f"[{family}] instructions are {word_count} words; ceiling 2700"
+        assert word_count <= 2950, f"[{family}] instructions are {word_count} words; ceiling 2950"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -646,6 +648,20 @@ class TestInstructionsUX:
         text = _instructions_for(family, "anything")
         assert "Next: **Submit** · **Iterate** · **Scrap**" in text, (
             f"[{family}] instructions should include the bold Submit · Iterate · Scrap prompt"
+        )
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_instructions_include_mandatory_preview_step(self, family):
+        """Sheetal flagged 2026-06-06 that Claude still doesn't auto-show the
+        design after generation — user has to manually ask "show it here". The
+        brief now carries a forceful mandatory-preview STEP that requires BOTH
+        an inline render AND a get_preview_url surface, in the same message,
+        before the Submit/Iterate/Scrap prompt.
+        """
+        text = _instructions_for(family, "anything")
+        assert "STEP" in text and "PREVIEW THE GENERATED PAGE — MANDATORY" in text, (
+            f"[{family}] instructions should include the mandatory-preview STEP "
+            f"that forces inline render + get_preview_url after HTML generation"
         )
 
     @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
