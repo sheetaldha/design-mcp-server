@@ -1410,35 +1410,43 @@ def search_stock_images(
     query: str,
     count: int = 6,
     orientation: str = "landscape",
+    source: str = "pexels",
 ) -> dict:
-    """Search Pexels for stock photos matching a keyword. Returns 6 real
-    candidates with URLs, photographer credit, alt text, and source link.
+    """Search free stock photos (Pexels + Unsplash) matching a keyword. Returns
+    real candidates with URLs, photographer credit, alt text, and source link.
 
-    NEVER fabricate Pexels or Unsplash URLs in HTML. ALWAYS call this tool
-    to get real, working image URLs for any image slot in the design.
+    NEVER fabricate Pexels or Unsplash URLs in HTML — both providers go through
+    the real API. ALWAYS call this tool to get real, working image URLs for any
+    image slot in the design. Pass source="both" to pull from BOTH providers
+    (results are interleaved + deduped + capped at `count`).
 
     Args:
         query: search keywords (e.g. "lead generation marketing")
-        count: 1-15, defaults to 6
+        count: 1-15, defaults to 6 (the total cap when source="both")
         orientation: "landscape" | "portrait" | "square"
+        source: "pexels" (default) | "unsplash" | "both"
 
     Returns:
         {
           "query": <echoed>,
+          "source": <echoed: "pexels" | "unsplash" | "both">,
           "results": [
             {
-              "id": <pexels_id>,
-              "url_large": "https://images.pexels.com/photos/.../large.jpg",
-              "url_medium": "https://images.pexels.com/photos/.../medium.jpg",
+              "id": <provider_id>,
+              "url_large": "<full-size embed URL>",      # use in <img src>
+              "url_medium": "<~350px thumbnail URL>",     # use for inline preview
               "photographer": "Name",
-              "photographer_url": "https://pexels.com/@...",
+              "photographer_url": "<author profile URL>",
               "alt": "<description>",
-              "source": "https://pexels.com/photo/..."
+              "source": "<provider photo page URL>",
+              "provider": "pexels" | "unsplash"
             },
             ...
           ],
-          "attribution_note": "Pexels requires linking to Pexels.com somewhere
-                              on the live page; render in footer fine print."
+          # str for a single provider; dict {"pexels": ..., "unsplash": ...}
+          # when source="both". Unsplash requires "Photo by {name} on Unsplash"
+          # with UTM-tagged links + an Unsplash credit; Pexels keeps its note.
+          "attribution_note": <str | {"pexels": str, "unsplash": str}>
         }
     """
     # Auth context is required so we don't expose the upstream API key as
@@ -1446,7 +1454,7 @@ def search_stock_images(
     resolve_user_email()
     try:
         return images_mod.search_stock_images(
-            query=query, count=count, orientation=orientation,
+            query=query, count=count, orientation=orientation, source=source,
         )
     except images_mod.ImagesError as exc:
         log.error("search_stock_images failed: %s", exc)

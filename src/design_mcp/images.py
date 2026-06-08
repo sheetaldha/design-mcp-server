@@ -30,15 +30,32 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search"
-_PEXELS_ALLOWED_ORIENTATIONS = {"landscape", "portrait", "square"}
+_UNSPLASH_SEARCH_URL = "https://api.unsplash.com/search/photos"
+# Both providers accept the same three orientation values, but Unsplash spells
+# "square" differently ("squarish"); we normalize on the wire in _unsplash_search.
+_ALLOWED_ORIENTATIONS = {"landscape", "portrait", "square"}
+# Back-compat alias — older code / tests referenced the Pexels-specific name.
+_PEXELS_ALLOWED_ORIENTATIONS = _ALLOWED_ORIENTATIONS
+_ALLOWED_SOURCES = {"pexels", "unsplash", "both"}
+
 _PEXELS_ATTRIBUTION_NOTE = (
     "Pexels requires linking to Pexels.com somewhere on the live page; "
     "render in footer fine print."
 )
+# Unsplash's API guidelines require crediting the photographer + Unsplash with
+# UTM-tagged links. The UTM params below are mandated by Unsplash.
+_UNSPLASH_UTM = "?utm_source=design_mcp&utm_medium=referral"
+_UNSPLASH_ATTRIBUTION_NOTE = (
+    "Unsplash requires crediting the photographer AND Unsplash with UTM-tagged "
+    'links: render `Photo by <a href="{photographer_url}">{photographer}</a> on '
+    '<a href="https://unsplash.com' + _UNSPLASH_UTM + '">Unsplash</a>` near the '
+    "image or in footer fine print. photographer_url + source already carry "
+    "the UTM params."
+)
 
 
 class ImagesError(RuntimeError):
-    """Raised when a Pexels / Iconify call fails or returns no usable data."""
+    """Raised when a Pexels / Unsplash / Iconify call fails or returns no usable data."""
 
 
 def _pexels_key() -> str:
@@ -51,8 +68,18 @@ def _pexels_key() -> str:
     return key
 
 
-def _clamp_pexels_count(count: int) -> int:
-    """Clamp count into Pexels' allowed range (1-15 for our purposes)."""
+def _unsplash_key() -> str:
+    key = os.getenv("UNSPLASH_ACCESS_KEY", "").strip()
+    if not key:
+        raise ImagesError(
+            "UNSPLASH_ACCESS_KEY is not configured on the server. Tell Sheetal to "
+            "add it to /home/ubuntu/design-mcp-server/.env and restart PM2."
+        )
+    return key
+
+
+def _clamp_stock_count(count: int) -> int:
+    """Clamp count into the shared stock-photo range (1-15 for our purposes)."""
     try:
         n = int(count)
     except (TypeError, ValueError):
@@ -60,33 +87,18 @@ def _clamp_pexels_count(count: int) -> int:
     return max(1, min(15, n))
 
 
-def search_stock_images(
-    query: str,
-    count: int = 6,
-    orientation: str = "landscape",
-) -> dict[str, Any]:
-    """Call the Pexels search API. Returns the public payload shape.
+# Back-compat alias — older code / tests referenced the Pexels-specific name.
+_clamp_pexels_count = _clamp_stock_count
 
-    Raises ImagesError on missing key, transport failure, or empty results.
-    The caller (the MCP tool) is responsible for surfacing the error string
-    back to Claude as a tool failure.
-    """
-    if not query or not query.strip():
-        raise ImagesError("query is required (got empty string)")
-    if orientation not in _PEXELS_ALLOWED_ORIENTATIONS:
-        raise ImagesError(
-            f"orientation must be one of {sorted(_PEXELS_ALLOWED_ORIENTATIONS)}, "
-            f"got {orientation!r}"
-        )
 
+def _pexels_search(query: str, n: int, orientation: str) -> list[dict[str, Any]]:
+    """Call the Pexels search API and return normalized photo dicts."""
     key = _pexels_key()
-    n = _clamp_pexels_count(count)
-
     try:
         resp = httpx.get(
             _PEXELS_SEARCH_URL,
             params={
-                "query": query.strip(),
+                "query": query,
                 "per_page": n,
                 "orientation": orientation,
             },
@@ -122,23 +134,167 @@ def search_stock_images(
                     "url_medium": src.get("medium"),
                     "photographer": photo.get("photographer") or "Unknown",
                     "photographer_url": photo.get("photographer_url") or "",
-                    "alt": (photo.get("alt") or "").strip() or query.strip(),
+                    "alt": (photo.get("alt") or "").strip() or query,
                     "source": photo.get("url") or "",
+                    "provider": "pexels",
                 }
             )
         except (AttributeError, TypeError) as exc:
             # Pexels payload is well-defined but be defensive — never let a
             # single malformed row poison the whole response.
             log.warning(
-                "search_stock_images: skipping malformed photo row for query=%r: %s",
+                "search_stock_images: skipping malformed pexels row for query=%r: %s",
                 query, exc,
             )
             continue
+    return results
+
+
+def _unsplash_search(query: str, n: int, orientation: str) -> list[dict[str, Any]]:
+    """Call the Unsplash search API and normalize into the Pexels dict shape.
+
+    Unsplash uses ``Authorization: Client-ID <key>`` (not a bare key or Bearer),
+    spells the square orientation ``squarish``, and nests the data under
+    ``results[]``. Output rows match _pexels_search exactly, with UTM-tagged
+    attribution links Unsplash's API guidelines require and a ``provider`` tag.
+    """
+    key = _unsplash_key()
+    # Unsplash's orientation enum spells square as "squarish".
+    uns_orientation = "squarish" if orientation == "square" else orientation
+    try:
+        resp = httpx.get(
+            _UNSPLASH_SEARCH_URL,
+            params={
+                "query": query,
+                "per_page": n,
+                "orientation": uns_orientation,
+            },
+            headers={"Authorization": f"Client-ID {key}"},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.HTTPError as exc:
+        log.error(
+            "search_stock_images: unsplash HTTP failure for query=%r: %s",
+            query, exc,
+        )
+        raise ImagesError(f"Unsplash API request failed: {exc}") from exc
+    except ValueError as exc:
+        log.error(
+            "search_stock_images: unsplash returned non-JSON for query=%r: %s",
+            query, exc,
+        )
+        raise ImagesError(f"Unsplash API returned invalid JSON: {exc}") from exc
+
+    photos = data.get("results") or []
+    results: list[dict[str, Any]] = []
+    for photo in photos:
+        try:
+            urls = photo.get("urls") or {}
+            user = photo.get("user") or {}
+            user_links = user.get("links") or {}
+            photo_links = photo.get("links") or {}
+            # Append UTM params Unsplash mandates to the author + photo links.
+            author_html = (user_links.get("html") or "").strip()
+            photographer_url = author_html + _UNSPLASH_UTM if author_html else ""
+            photo_html = (photo_links.get("html") or "").strip()
+            source = photo_html + _UNSPLASH_UTM if photo_html else ""
+            results.append(
+                {
+                    "id": photo.get("id"),
+                    "url_large": urls.get("regular"),
+                    "url_medium": urls.get("small"),
+                    "photographer": user.get("name") or "Unknown",
+                    "photographer_url": photographer_url,
+                    "alt": (photo.get("alt_description") or "").strip() or query,
+                    "source": source,
+                    "provider": "unsplash",
+                }
+            )
+        except (AttributeError, TypeError) as exc:
+            log.warning(
+                "search_stock_images: skipping malformed unsplash row for query=%r: %s",
+                query, exc,
+            )
+            continue
+    return results
+
+
+def _interleave_dedupe(
+    primary: list[dict[str, Any]],
+    secondary: list[dict[str, Any]],
+    cap: int,
+) -> list[dict[str, Any]]:
+    """Interleave two result lists (primary first), dedupe by url_large, cap total."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for a, b in zip(primary, secondary):
+        for row in (a, b):
+            key = row.get("url_large") or ""
+            if key and key not in seen:
+                seen.add(key)
+                out.append(row)
+    # Drain whichever list was longer.
+    for row in primary[len(secondary):] + secondary[len(primary):]:
+        key = row.get("url_large") or ""
+        if key and key not in seen:
+            seen.add(key)
+            out.append(row)
+    return out[:cap]
+
+
+def search_stock_images(
+    query: str,
+    count: int = 6,
+    orientation: str = "landscape",
+    source: str = "pexels",
+) -> dict[str, Any]:
+    """Search free stock photos. Returns the public payload shape.
+
+    ``source`` selects the provider: ``"pexels"`` (default), ``"unsplash"``, or
+    ``"both"`` (query each, interleave + dedupe, cap at ``count``). All providers
+    return the SAME normalized row shape (id / url_large / url_medium /
+    photographer / photographer_url / alt / source / provider).
+
+    Raises ImagesError on bad args, missing key, transport failure, or non-JSON.
+    The caller (the MCP tool) surfaces the error string back to Claude.
+    """
+    if not query or not query.strip():
+        raise ImagesError("query is required (got empty string)")
+    if orientation not in _ALLOWED_ORIENTATIONS:
+        raise ImagesError(
+            f"orientation must be one of {sorted(_ALLOWED_ORIENTATIONS)}, "
+            f"got {orientation!r}"
+        )
+    if source not in _ALLOWED_SOURCES:
+        raise ImagesError(
+            f"source must be one of {sorted(_ALLOWED_SOURCES)}, got {source!r}"
+        )
+
+    q = query.strip()
+    n = _clamp_stock_count(count)
+
+    if source == "pexels":
+        results = _pexels_search(q, n, orientation)
+        note = _PEXELS_ATTRIBUTION_NOTE
+    elif source == "unsplash":
+        results = _unsplash_search(q, n, orientation)
+        note = _UNSPLASH_ATTRIBUTION_NOTE
+    else:  # both — query each, interleave + dedupe, cap at n
+        pexels_rows = _pexels_search(q, n, orientation)
+        unsplash_rows = _unsplash_search(q, n, orientation)
+        results = _interleave_dedupe(pexels_rows, unsplash_rows, cap=n)
+        note = {
+            "pexels": _PEXELS_ATTRIBUTION_NOTE,
+            "unsplash": _UNSPLASH_ATTRIBUTION_NOTE,
+        }
 
     return {
-        "query": query.strip(),
+        "query": q,
+        "source": source,
         "results": results,
-        "attribution_note": _PEXELS_ATTRIBUTION_NOTE,
+        "attribution_note": note,
     }
 
 

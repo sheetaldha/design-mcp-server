@@ -78,7 +78,7 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "images_choice",
         "Do you want images on this page?",
         "Yes — I'll paste image URLs in chat now",
-        "Yes — search free Pexels stock photos for me",
+        "Yes — search free stock photos (Pexels + Unsplash) for me",
         "No — clean modern look with icons + gradients only",
     ),
     # 6. Review checkpoint — pseudo-field; no data collected

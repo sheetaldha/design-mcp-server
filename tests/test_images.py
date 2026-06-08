@@ -91,6 +91,12 @@ def pexels_key(monkeypatch):
     monkeypatch.setenv("PEXELS_API_KEY", "test-pexels-key")
 
 
+@pytest.fixture
+def unsplash_key(monkeypatch):
+    """Set the UNSPLASH_ACCESS_KEY so the Unsplash branch doesn't bail out."""
+    monkeypatch.setenv("UNSPLASH_ACCESS_KEY", "test-unsplash-key")
+
+
 def _pexels_payload(query: str, n: int = 6) -> dict[str, Any]:
     """Mimic a real Pexels /v1/search response — minus fields we ignore."""
     photos = []
@@ -110,6 +116,28 @@ def _pexels_payload(query: str, n: int = 6) -> dict[str, Any]:
             }
         )
     return {"photos": photos, "total_results": n}
+
+
+def _unsplash_payload(query: str, n: int = 6) -> dict[str, Any]:
+    """Mimic a real Unsplash /search/photos response — minus fields we ignore."""
+    results = []
+    for i in range(n):
+        results.append(
+            {
+                "id": f"unsplash-{2000 + i}",
+                "alt_description": f"{query} unsplash sample {i}",
+                "urls": {
+                    "regular": f"https://images.unsplash.com/photo-{2000 + i}?w=1080",
+                    "small": f"https://images.unsplash.com/photo-{2000 + i}?w=400",
+                },
+                "user": {
+                    "name": f"Unsplash Shooter {i}",
+                    "links": {"html": f"https://unsplash.com/@shooter-{i}"},
+                },
+                "links": {"html": f"https://unsplash.com/photos/{2000 + i}"},
+            }
+        )
+    return {"results": results, "total": n, "total_pages": 1}
 
 
 def _iconify_search_payload(icons: list[str]) -> dict[str, Any]:
@@ -205,6 +233,128 @@ class TestSearchStockImages:
             out = search_stock_images(query="x")
         assert out["results"] == []
         assert "Pexels" in out["attribution_note"]
+
+
+# ---------------------------------------------------------------------------
+# search_stock_images — Unsplash provider + source="both"
+# ---------------------------------------------------------------------------
+
+class TestUnsplashProvider:
+    def test_unsplash_returns_normalized_shape(self, unsplash_key):
+        query = "solar panels rooftop"
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://api.unsplash.com/search/photos").mock(
+                return_value=httpx.Response(200, json=_unsplash_payload(query, n=6))
+            )
+            out = search_stock_images(
+                query=query, count=6, orientation="landscape", source="unsplash"
+            )
+        assert out["query"] == query
+        assert out["source"] == "unsplash"
+        assert len(out["results"]) == 6
+        first = out["results"][0]
+        # EXACT same keys Pexels returns, plus the provider tag.
+        for key in (
+            "id", "url_large", "url_medium", "photographer",
+            "photographer_url", "alt", "source", "provider",
+        ):
+            assert key in first, f"missing key {key!r}"
+        assert first["provider"] == "unsplash"
+        # urls.regular -> url_large, urls.small -> url_medium.
+        assert first["url_large"].startswith("https://images.unsplash.com/")
+        assert "w=1080" in first["url_large"]
+        assert "w=400" in first["url_medium"]
+        # user.name -> photographer; user.links.html -> photographer_url (UTM-tagged).
+        assert first["photographer"] == "Unsplash Shooter 0"
+        assert first["photographer_url"].startswith("https://unsplash.com/@shooter-0")
+        assert "utm_source=design_mcp" in first["photographer_url"]
+        assert "utm_medium=referral" in first["photographer_url"]
+        # photo links.html -> source, also UTM-tagged.
+        assert first["source"].startswith("https://unsplash.com/photos/")
+        assert "utm_source=design_mcp" in first["source"]
+        # Attribution note names Unsplash + the required UTM credit.
+        assert "Unsplash" in out["attribution_note"]
+        assert "utm_source=design_mcp" in out["attribution_note"]
+
+    def test_unsplash_uses_client_id_auth_header(self, unsplash_key):
+        captured: dict[str, Any] = {}
+
+        def _capture(req: httpx.Request) -> httpx.Response:
+            captured["authz"] = req.headers.get("authorization")
+            return httpx.Response(200, json=_unsplash_payload("x"))
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://api.unsplash.com/search/photos").mock(
+                side_effect=_capture
+            )
+            search_stock_images(query="x", source="unsplash")
+        # Unsplash requires "Client-ID <key>", NOT a bare key or "Bearer".
+        assert captured["authz"] == "Client-ID test-unsplash-key"
+
+    def test_unsplash_maps_square_to_squarish(self, unsplash_key):
+        captured: dict[str, Any] = {}
+
+        def _capture(req: httpx.Request) -> httpx.Response:
+            captured["orientation"] = req.url.params.get("orientation")
+            return httpx.Response(200, json=_unsplash_payload("x"))
+
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://api.unsplash.com/search/photos").mock(
+                side_effect=_capture
+            )
+            search_stock_images(query="x", source="unsplash", orientation="square")
+        # Unsplash's enum spells square as "squarish".
+        assert captured["orientation"] == "squarish"
+
+    def test_unsplash_missing_key_raises(self, monkeypatch):
+        monkeypatch.delenv("UNSPLASH_ACCESS_KEY", raising=False)
+        with pytest.raises(ImagesError, match="UNSPLASH_ACCESS_KEY"):
+            search_stock_images(query="x", source="unsplash")
+
+    def test_unsplash_http_failure_raises(self, unsplash_key):
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://api.unsplash.com/search/photos").mock(
+                return_value=httpx.Response(500, text="boom")
+            )
+            with pytest.raises(ImagesError, match="Unsplash API request failed"):
+                search_stock_images(query="x", source="unsplash")
+
+    def test_bad_source_raises(self, pexels_key):
+        with pytest.raises(ImagesError, match="source"):
+            search_stock_images(query="x", source="flickr")
+
+    def test_default_source_is_pexels(self, pexels_key):
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://api.pexels.com/v1/search").mock(
+                return_value=httpx.Response(200, json=_pexels_payload("x", n=3))
+            )
+            out = search_stock_images(query="x")
+        assert out["source"] == "pexels"
+        assert all(r["provider"] == "pexels" for r in out["results"])
+
+    def test_source_both_interleaves_and_caps(self, pexels_key, unsplash_key):
+        query = "lead generation"
+        with respx.mock(assert_all_called=False) as router:
+            router.get("https://api.pexels.com/v1/search").mock(
+                return_value=httpx.Response(200, json=_pexels_payload(query, n=6))
+            )
+            router.get("https://api.unsplash.com/search/photos").mock(
+                return_value=httpx.Response(200, json=_unsplash_payload(query, n=6))
+            )
+            out = search_stock_images(query=query, count=6, source="both")
+        assert out["source"] == "both"
+        # Capped at requested count.
+        assert len(out["results"]) == 6
+        providers = {r["provider"] for r in out["results"]}
+        # Both providers represented in the interleave.
+        assert providers == {"pexels", "unsplash"}
+        # Interleave order: pexels first, then unsplash, alternating.
+        assert out["results"][0]["provider"] == "pexels"
+        assert out["results"][1]["provider"] == "unsplash"
+        # attribution_note is per-source when source="both".
+        assert isinstance(out["attribution_note"], dict)
+        assert "Pexels" in out["attribution_note"]["pexels"]
+        assert "Unsplash" in out["attribution_note"]["unsplash"]
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +514,7 @@ class TestBriefRendersImageRules:
         # All three images_choice option strings appear verbatim — so the
         # rules block can document the per-branch flow without paraphrasing.
         assert "Yes — I'll paste image URLs in chat now" in text
-        assert "Yes — search free Pexels stock photos for me" in text
+        assert "Yes — search free stock photos (Pexels + Unsplash) for me" in text
         assert "No — clean modern look with icons + gradients only" in text
 
     def test_pexels_attribution_documented(self):
@@ -398,7 +548,7 @@ class TestImagesChoiceField:
         opts = _CLARIFYING_FIELDS[4].suggested_options
         assert opts == (
             "Yes — I'll paste image URLs in chat now",
-            "Yes — search free Pexels stock photos for me",
+            "Yes — search free stock photos (Pexels + Unsplash) for me",
             "No — clean modern look with icons + gradients only",
         )
 

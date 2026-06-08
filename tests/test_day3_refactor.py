@@ -606,11 +606,13 @@ class TestInstructionsUX:
         # rephrasing clarifying questions + (d) the IMAGE & ICON RULES block
         # plus the `images_choice` curated field that drives Pexels / Iconify
         # server-controlled image sourcing + (e) the mandatory-preview STEP
-        # forcing inline render + get_preview_url after HTML generation, the
-        # landing brief now lands ~2800 words. Ceiling bumped to 2950 to keep
-        # small headroom.
+        # forcing inline render + get_preview_url after HTML generation + (f)
+        # the inline thumbnail-gallery instruction (show photos in chat before
+        # the picker) and the Unsplash-as-second-source wiring (source="both"
+        # + per-provider attribution), the landing brief now lands ~2960 words.
+        # Ceiling bumped to 3000 to keep small headroom.
         word_count = len(text.split())
-        assert word_count <= 2950, f"[{family}] instructions are {word_count} words; ceiling 2950"
+        assert word_count <= 3000, f"[{family}] instructions are {word_count} words; ceiling 3000"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -1632,7 +1634,7 @@ class TestLandingPageClarifyingFieldsRewrite:
         assert _CLARIFYING_FIELDS[4].suggested_options is not None
         assert list(_CLARIFYING_FIELDS[4].suggested_options) == [
             "Yes — I'll paste image URLs in chat now",
-            "Yes — search free Pexels stock photos for me",
+            "Yes — search free stock photos (Pexels + Unsplash) for me",
             "No — clean modern look with icons + gradients only",
         ]
         assert _CLARIFYING_FIELDS[4].is_checkpoint is False

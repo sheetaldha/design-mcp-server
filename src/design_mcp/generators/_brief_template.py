@@ -155,15 +155,15 @@ The server now owns image + icon sourcing. The prod bug that triggered this rule
    - `search_stock_images` — call this during HTML generation, SHOW the returned candidates as an inline numbered markdown-image gallery in chat FIRST (so the user actually SEES each photo), THEN present an AskUserQuestion to pick one, and embed the user's pick verbatim;
    - URLs the user pasted in chat — reuse them verbatim, no edits to the URL.
 3. **Allowed exceptions:** data URIs for tiny inline graphics (favicons, decorative gradients), CSS `background: linear-gradient(...)` blocks, logo URLs the user explicitly provided.
-4. **Required attribution for Pexels images:** render `Photo by <photographer>` (link to `photographer_url`) inside the image's `alt` text AND include a footer fine-print line: `Photos via <a href="https://pexels.com">Pexels</a>`. The `attribution_note` field returned by `search_stock_images` repeats this rule.
+4. **Required attribution (per provider — every photo has a `provider` tag):** Pexels → `Photo by <photographer>` (linked to `photographer_url`) + footer line `Photos via <a href="https://pexels.com">Pexels</a>`. Unsplash → `Photo by <a href="{photographer_url}">{photographer}</a> on <a href="{source}">Unsplash</a>` (photographer_url + source already carry the UTM params Unsplash requires). The per-source `attribution_note` from `search_stock_images` spells out the exact rule.
 
 IMAGE FLOW — driven by the `images_choice` clarifying answer:
 
 - `images_choice` = "Yes — I'll paste image URLs in chat now"
   After STEP 1 intake finishes, BEFORE generating HTML, prompt the user verbatim: "Paste your image URLs in chat now. Tell me which slot each goes to (hero, card 1, card 2, etc). I'll wait for you to paste them before generating." Wait for the paste. Embed each URL verbatim in the matching slot. Do NOT auto-substitute or alter the URLs.
 
-- `images_choice` = "Yes — search free Pexels stock photos for me"
-  Per photo slot (hero, cards, sections): call `search_stock_images(query=<slot keyword>)`. AskUserQuestion options are TEXT-ONLY, so the user sees NO photo unless you render it in chat first. So, in this exact order:
+- `images_choice` = "Yes — search free stock photos (Pexels + Unsplash) for me"
+  Per photo slot (hero, cards, sections): call `search_stock_images(query=<slot keyword>, source="both")` to pull from BOTH Pexels + Unsplash. AskUserQuestion options are TEXT-ONLY, so the user sees NO photo unless you render it in chat first. So, in this exact order:
   1. POST AN INLINE NUMBERED MARKDOWN-IMAGE GALLERY (its own message) using each candidate's `url_medium` (~350px thumbnail) as the image src, one per line, so the user SEES every photo: `1. ![Photo by {photographer}]({url_medium})` … (numbered, one line per candidate). Do NOT skip it, do NOT describe photos in words instead, do NOT use `url_large` here (that's the embed, not the thumbnail).
   2. THEN AskUserQuestion to pick one; labels reference the number + photographer (e.g. "1 — by {photographer}").
   3. Embed the pick's `url_large` + alt + photographer attribution into the slot.
