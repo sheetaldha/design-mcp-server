@@ -269,3 +269,174 @@ def test_render_with_otp_enabled_emits_otp_section() -> None:
     html = survey_funnel._render_html(m)
     assert 'class="otp' in html
     assert "/api/verificationsms" in html
+
+
+# ---------------------------------------------------------------------------
+# Stock-image flow — mirrors tests/test_images.py for the landing_page family.
+# Survey funnel reuses the SHARED IMAGE & ICON RULES block + the same 3-option
+# images_choice field; these tests assert that wiring is live for surveys.
+# ---------------------------------------------------------------------------
+
+class TestSurveyImagesChoiceField:
+    def test_images_choice_field_present(self) -> None:
+        from design_mcp.generators.survey_funnel import _CLARIFYING_FIELDS
+
+        keys = [cf.key for cf in _CLARIFYING_FIELDS]
+        assert "images_choice" in keys
+
+    def test_images_choice_options_verbatim_and_in_order(self) -> None:
+        from design_mcp.generators.survey_funnel import _CLARIFYING_FIELDS
+
+        cf = next(f for f in _CLARIFYING_FIELDS if f.key == "images_choice")
+        # EXACT same 3 options as the landing_page family (verbatim, in order).
+        assert cf.suggested_options == (
+            "Yes — I'll paste image URLs in chat now",
+            "Yes — search free stock photos (Pexels + Unsplash) for me",
+            "No — clean modern look with icons + gradients only",
+        )
+
+    def test_images_choice_options_match_landing_page(self) -> None:
+        # DRY guard: survey + landing image options must stay identical so the
+        # shared image-flow block documents the same branch strings for both.
+        from design_mcp.generators.landing_page import (
+            _CLARIFYING_FIELDS as LP_FIELDS,
+        )
+        from design_mcp.generators.survey_funnel import (
+            _CLARIFYING_FIELDS as SF_FIELDS,
+        )
+
+        lp = next(f for f in LP_FIELDS if f.key == "images_choice")
+        sf = next(f for f in SF_FIELDS if f.key == "images_choice")
+        assert sf.suggested_options == lp.suggested_options
+
+    def test_images_choice_default_is_icons_only(self) -> None:
+        from design_mcp.generators._brief_template import SURVEY_FUNNEL_DEFAULTS
+
+        # Speed-mode must default to the no-fabrication icon/gradient path.
+        assert (
+            SURVEY_FUNNEL_DEFAULTS["images_choice"]
+            == "No — clean modern look with icons + gradients only"
+        )
+
+
+class TestSurveyBriefRendersImageRules:
+    def _brief(self) -> str:
+        return survey_funnel.make_design_brief(
+            "Compare solar quotes for Aussie homeowners",
+            requested_slug="solar-stock-test",
+        )["instructions"]
+
+    def test_image_icon_rules_block_present(self) -> None:
+        text = self._brief()
+        assert "IMAGE & ICON RULES" in text
+        assert "NEVER FABRICATE" in text
+        # Names the family-agnostic tools the caller can already use.
+        assert "search_stock_images" in text
+        assert "fetch_icons" in text
+        assert "search_icons" in text
+
+    def test_forbids_inline_svg_and_fabricated_photo_urls(self) -> None:
+        text = self._brief()
+        assert "NEVER write inline" in text and "<svg>" in text
+        assert "NEVER fabricate" in text and "Pexels" in text and "Unsplash" in text
+
+    def test_stock_branch_shows_inline_gallery_before_asking(self) -> None:
+        text = self._brief()
+        # Same inline-gallery requirement the landing_page brief carries.
+        assert "INLINE NUMBERED MARKDOWN-IMAGE GALLERY" in text
+        assert "url_medium" in text
+        assert "![Photo by {photographer}]({url_medium})" in text
+
+    def test_describes_three_images_choice_branches(self) -> None:
+        text = self._brief()
+        assert "Yes — I'll paste image URLs in chat now" in text
+        assert "Yes — search free stock photos (Pexels + Unsplash) for me" in text
+        assert "No — clean modern look with icons + gradients only" in text
+
+    def test_image_block_is_the_shared_one(self) -> None:
+        # DRY proof: the survey brief contains the EXACT shared constant from
+        # _brief_template.py — not a hand-copied paraphrase.
+        from design_mcp.generators._brief_template import _IMAGE_ICON_RULES_BLOCK
+
+        assert _IMAGE_ICON_RULES_BLOCK.strip() in self._brief()
+
+
+# ---------------------------------------------------------------------------
+# Manifest — optional results/CTA image slot (net-new for survey funnels).
+# ---------------------------------------------------------------------------
+
+class TestResultsCtaImageSlot:
+    def _base(self) -> dict:
+        return yaml.safe_load(SAMPLE_MANIFEST_YAML)
+
+    def test_results_cta_with_image_validates(self) -> None:
+        from design_mcp.manifest import ResultsCta
+
+        data = self._base()
+        data["optional_sections"] = ["progress_indicator", "results_cta"]
+        data["results_cta"] = {
+            "heading": "You're a great match",
+            "body": "Based on your answers we found accredited installers near you.",
+            "cta_label": "See my quotes",
+            "image_url": "https://images.pexels.com/photos/1234/large.jpg",
+            "image_alt": "Happy homeowner reviewing solar quotes on a laptop",
+        }
+        m = SurveyFunnelManifest(**data)
+        assert isinstance(m.results_cta, ResultsCta)
+        assert m.results_cta.image_url is not None
+        # Renders into the HTML, lazy-loaded (below the fold, not the LCP image).
+        html = survey_funnel._render_html(m)
+        assert 'id="results"' in html
+        assert 'loading="lazy"' in html
+        assert "Happy homeowner reviewing solar quotes on a laptop" in html
+
+    def test_results_cta_image_optional(self) -> None:
+        # The supporting image is optional — a text-only results block is valid.
+        data = self._base()
+        data["optional_sections"] = ["results_cta"]
+        data["results_cta"] = {
+            "heading": "You're a great match",
+            "body": "We found accredited installers near you.",
+            "cta_label": "See my quotes",
+        }
+        m = SurveyFunnelManifest(**data)
+        assert m.results_cta is not None
+        assert m.results_cta.image_url is None
+
+    def test_results_cta_image_url_requires_alt(self) -> None:
+        data = self._base()
+        data["optional_sections"] = ["results_cta"]
+        data["results_cta"] = {
+            "heading": "Heading here",
+            "body": "Body copy long enough to validate cleanly.",
+            "cta_label": "Continue",
+            "image_url": "https://images.pexels.com/photos/9/large.jpg",
+            # image_alt deliberately omitted
+        }
+        with pytest.raises(ValidationError):
+            SurveyFunnelManifest(**data)
+
+    def test_results_cta_flag_requires_data(self) -> None:
+        data = self._base()
+        data["optional_sections"] = ["results_cta"]  # flag on, no payload
+        data.pop("results_cta", None)
+        with pytest.raises(ValidationError):
+            SurveyFunnelManifest(**data)
+
+    def test_results_cta_data_requires_flag(self) -> None:
+        data = self._base()
+        data["optional_sections"] = ["progress_indicator"]  # flag missing
+        data["results_cta"] = {
+            "heading": "Heading here",
+            "body": "Body copy long enough to validate cleanly.",
+            "cta_label": "Continue",
+        }
+        with pytest.raises(ValidationError):
+            SurveyFunnelManifest(**data)
+
+    def test_contract_lists_results_cta_optional_section(self) -> None:
+        data = yaml.safe_load(CONTRACT_PATH.read_text())
+        ids = {s["id"] for s in data["optional_sections"]}
+        assert "results_cta" in ids
+        # Image-source provenance note mirrors landing_page (anti-fabrication).
+        assert "image_source" in data["image_contract"]

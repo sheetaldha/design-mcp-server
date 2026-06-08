@@ -220,6 +220,44 @@ class FormStep(BaseModel):
     questions: list[FormQuestion] = Field(..., min_length=1, max_length=10)
 
 
+class ResultsCta(BaseModel):
+    """Optional results / post-qualification CTA block for a Survey Funnel.
+
+    Carries an OPTIONAL supporting image so a funnel can show a reassuring
+    visual (e.g. a happy customer, a product shot) alongside the final
+    call-to-action. Mirrors the landing_page image contract: when `image_url`
+    is set, `image_alt` (≥3 chars) is required, and the rendered <img> takes
+    `loading="lazy"` + explicit width/height (it is below the fold, never the
+    LCP image — that's always the hero).
+    """
+
+    heading: str = Field(..., min_length=3, max_length=120)
+    body: str = Field(..., min_length=3, max_length=400)
+    cta_label: str = Field(..., min_length=2, max_length=40)
+    image_url: Optional[str] = Field(
+        default=None,
+        description="Optional supporting photo (lazy-loaded, below the fold).",
+    )
+    image_alt: Optional[str] = Field(default=None, min_length=3, max_length=200)
+
+    @model_validator(mode="after")
+    def _alt_required_with_image(self) -> "ResultsCta":
+        # Mirror the hero/feature image contract: a photo without descriptive
+        # alt fails the audit. Enforce the pairing here so an orphan image_url
+        # can't ship without alt text.
+        if self.image_url and not self.image_alt:
+            raise ValueError(
+                "results_cta.image_url is set but image_alt is missing; "
+                "supply alt text (≥3 chars) for the supporting image."
+            )
+        if self.image_alt and not self.image_url:
+            raise ValueError(
+                "results_cta.image_alt is set without image_url; "
+                "remove the alt or provide the image."
+            )
+        return self
+
+
 class SurveyFunnelManifest(BaseModel):
     """The page-meta.yaml schema for a Survey Funnel design."""
     family: Literal["survey-funnel"] = "survey-funnel"
@@ -238,5 +276,39 @@ class SurveyFunnelManifest(BaseModel):
         ),
     )
     submit_label: str = Field(..., min_length=2, max_length=40)
-    optional_sections: list[Literal["progress_indicator", "trust_badges", "testimonials", "sticky_cta_mobile"]] = Field(default_factory=list)
+    optional_sections: list[
+        Literal[
+            "progress_indicator",
+            "trust_badges",
+            "testimonials",
+            "sticky_cta_mobile",
+            "results_cta",
+        ]
+    ] = Field(default_factory=list)
+    results_cta: Optional[ResultsCta] = Field(
+        default=None,
+        description=(
+            "Required if 'results_cta' in optional_sections. A results / "
+            "post-qualification CTA block with an OPTIONAL supporting image."
+        ),
+    )
     theme: ThemeTokens = Field(default_factory=ThemeTokens)
+
+    @model_validator(mode="after")
+    def _results_cta_data_matches_flag(self) -> "SurveyFunnelManifest":
+        """Two-way contract between the `results_cta` flag and its payload —
+        same orphan-data guard the landing_page family uses for its optional
+        sections. Flag set → data required; data set → flag required."""
+        enabled = "results_cta" in set(self.optional_sections)
+        if enabled and self.results_cta is None:
+            raise ValueError(
+                "optional_sections includes 'results_cta' but `results_cta` "
+                "is missing; provide the results CTA block."
+            )
+        if not enabled and self.results_cta is not None:
+            raise ValueError(
+                "`results_cta` provided without 'results_cta' in "
+                "optional_sections; enable the flag or remove the data "
+                "(orphan data is refused)."
+            )
+        return self

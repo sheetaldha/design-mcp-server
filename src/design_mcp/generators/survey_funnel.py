@@ -121,6 +121,17 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Redirect to external URL",
         "Both (thank-you then redirect)",
     ),
+    # Images choice — drives the server-controlled image-sourcing flow (shared
+    # with the landing_page family; same 3 options + same icon/gradient default).
+    # Stops Claude from fabricating Pexels / Unsplash URLs. Placed with the
+    # visual/styling questions (palette, tone) since it shapes the look.
+    field(
+        "images_choice",
+        "Do you want photos on this funnel?",
+        "Yes — I'll paste image URLs in chat now",
+        "Yes — search free stock photos (Pexels + Unsplash) for me",
+        "No — clean modern look with icons + gradients only",
+    ),
     field("palette", "Brand colours, tone (friendly / professional / playful / authoritative), styles to avoid?"),
     field(
         "tone",
@@ -174,6 +185,11 @@ def _build_instructions(
         family_contract_notes=_CONTRACT_NOTES,
         defaults=SURVEY_FUNNEL_DEFAULTS,
         sanity_check_items=_SANITY_CHECK_ITEMS,
+        # Reuse the SAME shared IMAGE & ICON RULES + IMAGE FLOW block the
+        # landing_page family renders (single source of truth in
+        # _brief_template.py). Survey Funnel keeps the classic (non-strict)
+        # intake but opts into the shared image-sourcing flow.
+        enable_image_flow=True,
     )
 
 
@@ -261,6 +277,7 @@ def _render_html(m: SurveyFunnelManifest) -> str:
 
     fieldsets_html = "".join(_fieldset(s, i, total_steps, m) for i, s in enumerate(m.steps))
     otp_html = _otp_section(m) if m.otp_enabled else ""
+    results_html = _results_cta_section(m) if m.results_cta else ""
 
     return f"""<!doctype html>
 <html lang="en">
@@ -330,7 +347,7 @@ def _render_html(m: SurveyFunnelManifest) -> str:
         </form>
       </div>
     </section>
-  </main>
+{results_html}  </main>
 
   <footer class="border-t border-gray-200 py-8 text-center text-sm text-gray-500">
     <p>&copy; {date.today().year}. All rights reserved.</p>
@@ -453,6 +470,35 @@ def _otp_section(m: SurveyFunnelManifest) -> str:
               <button type="submit" class="ml-auto bg-[var(--color-primary)] hover:opacity-90 text-white px-6 py-3 rounded font-semibold">{_e(m.submit_label)}</button>
             </div>
           </section>
+"""
+
+
+def _results_cta_section(m: SurveyFunnelManifest) -> str:
+    """Optional results / post-qualification CTA block.
+
+    Rendered only when `results_cta` is populated (the manifest validator
+    enforces it pairs with the 'results_cta' optional-section flag). The
+    supporting image is itself optional; when present it is below-the-fold so
+    it gets loading="lazy" + explicit width/height (never the LCP image — that
+    is always the hero), matching the shared image contract.
+    """
+    rc = m.results_cta
+    assert rc is not None  # guarded by caller
+    img_html = ""
+    if rc.image_url:
+        img_html = (
+            f'<img src="{_e(rc.image_url)}" alt="{_e(rc.image_alt or "")}" '
+            f'width="1200" height="800" loading="lazy" '
+            f'class="rounded-lg shadow-xl w-full h-auto mb-8">'
+        )
+    return f"""    <section id="results" class="bg-white py-[var(--spacing-section)]">
+      <div class="max-w-3xl mx-auto px-6 text-center">
+        {img_html}
+        <h2 class="text-3xl font-bold mb-4">{_e(rc.heading)}</h2>
+        <p class="text-lg text-gray-600 mb-8">{_e(rc.body)}</p>
+        <a href="#step-1" class="inline-block bg-[var(--color-accent)] hover:opacity-90 text-white px-6 py-3 rounded-md font-semibold">{_e(rc.cta_label)}</a>
+      </div>
+    </section>
 """
 
 

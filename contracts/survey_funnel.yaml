@@ -102,6 +102,16 @@ optional_sections:
   - id: sticky_cta_mobile
     description: Sticky bottom CTA bar on mobile that scrolls to the current step
     cms_field_map: { enabled: derived from family options }
+  - id: results_cta
+    description: >-
+      Results / post-qualification CTA block beneath the funnel (heading +
+      body + CTA) with an OPTIONAL supporting image. The image is below the
+      fold, so it is lazy-loaded (never the LCP image — that is always the
+      hero). Populate the manifest `results_cta` object when this flag is set.
+    cms_field_map:
+      heading: contentModel.section_second_header
+      body: contentModel.section_second_paragraph
+      image: contentModel.section_second_img   # optional supporting photo
 
 # ────────────────────────────────────────────────────────────────────────────
 # SEO contract — mandatory <head> block. Identical to landing-page family.
@@ -151,6 +161,14 @@ image_contract:
   placeholder_during_generation:
     src_pattern: "https://picsum.photos/seed/<slug>-<region>/<w>/<h>"
     note: "Skill B's Register Agent uploads real images via cms_upload_image and rewrites these URLs"
+  image_source:
+    note: >-
+      Photo URLs are NEVER fabricated. Driven by the `images_choice` clarifying
+      answer: user-pasted URLs (verbatim), or real Pexels/Unsplash results from
+      the `search_stock_images` tool (inline numbered gallery → AskUserQuestion
+      pick → embed url_large + per-provider attribution), or icons + gradients
+      only. Full rules live in the intake brief (single source of truth).
+    choices: [paste_own_urls, search_stock_pexels_unsplash, icons_gradients_only]
 
 # ────────────────────────────────────────────────────────────────────────────
 # Color + typography — Option Y+ (CSS variables + bake-in fallback)

@@ -93,6 +93,10 @@ SURVEY_FUNNEL_DEFAULTS: dict[str, str] = {
     "otp": "skip OTP",
     "submit_label": "Get My Quotes",
     "post_submit": "thank-you on the same page",
+    # Mirrors LANDING_PAGE_DEFAULTS: speed-mode defaults to the icon/gradient
+    # path so we never silently fabricate Pexels / Unsplash URLs. Operators who
+    # want photos answer the images_choice clarifying question explicitly.
+    "images_choice": "No — clean modern look with icons + gradients only",
     "palette": "modern blue (#2563eb primary, slate text)",
     "tone": "friendly + professional",
 }
@@ -146,7 +150,21 @@ The clarifying questions below are a FIXED SCRIPT, not suggestions. Treat them l
 
 Why this matters: operators are non-technical and rely on a predictable, repeatable flow. Each invented question or reworded option erodes trust and makes batches inconsistent. The script below is the contract.
 
-IMAGE & ICON RULES — NEVER FABRICATE.
+"""
+
+
+# ---------------------------------------------------------------------------
+# IMAGE & ICON RULES + IMAGE FLOW — SINGLE SOURCE OF TRUTH for the
+# server-driven stock-image / icon flow. Family-agnostic: slot examples name
+# "hero, cards/steps, sections" so it reads correctly for both Landing Page
+# (hero + 3 cards) and Survey Funnel (hero + steps + optional results/CTA).
+# Rendered into a family's brief whenever `enable_image_flow=True` (which
+# `strict_script=True` implies). Do NOT duplicate this prose anywhere else —
+# both families pull from this one constant so attribution / anti-fabrication
+# rules stay identical.
+# ---------------------------------------------------------------------------
+
+_IMAGE_ICON_RULES_BLOCK = """IMAGE & ICON RULES — NEVER FABRICATE.
 
 The server now owns image + icon sourcing. The prod bug that triggered this rule: Claude was hallucinating Unsplash URLs that resolved to irrelevant photos (e.g. football stadiums for "lead generation"). New contract:
 
@@ -160,10 +178,10 @@ The server now owns image + icon sourcing. The prod bug that triggered this rule
 IMAGE FLOW — driven by the `images_choice` clarifying answer:
 
 - `images_choice` = "Yes — I'll paste image URLs in chat now"
-  After STEP 1 intake finishes, BEFORE generating HTML, prompt the user verbatim: "Paste your image URLs in chat now. Tell me which slot each goes to (hero, card 1, card 2, etc). I'll wait for you to paste them before generating." Wait for the paste. Embed each URL verbatim in the matching slot. Do NOT auto-substitute or alter the URLs.
+  After STEP 1 intake finishes, BEFORE generating HTML, prompt the user verbatim: "Paste your image URLs in chat now. Tell me which slot each goes to (hero, card 1 / step 1, results, etc). I'll wait for you to paste them before generating." Wait for the paste. Embed each URL verbatim in the matching slot. Do NOT auto-substitute or alter the URLs.
 
 - `images_choice` = "Yes — search free stock photos (Pexels + Unsplash) for me"
-  Per photo slot (hero, cards, sections): call `search_stock_images(query=<slot keyword>, source="both")` to pull from BOTH Pexels + Unsplash. AskUserQuestion options are TEXT-ONLY, so the user sees NO photo unless you render it in chat first. So, in this exact order:
+  Per photo slot (hero, cards/steps, sections, results/CTA): call `search_stock_images(query=<slot keyword>, source="both")` to pull from BOTH Pexels + Unsplash. AskUserQuestion options are TEXT-ONLY, so the user sees NO photo unless you render it in chat first. So, in this exact order:
   1. POST AN INLINE NUMBERED MARKDOWN-IMAGE GALLERY (its own message) using each candidate's `url_medium` (~350px thumbnail) as the image src, one per line, so the user SEES every photo: `1. ![Photo by {photographer}]({url_medium})` … (numbered, one line per candidate). Do NOT skip it, do NOT describe photos in words instead, do NOT use `url_large` here (that's the embed, not the thumbnail).
   2. THEN AskUserQuestion to pick one; labels reference the number + photographer (e.g. "1 — by {photographer}").
   3. Embed the pick's `url_large` + alt + photographer attribution into the slot.
@@ -265,6 +283,7 @@ def render_brief(
     sanity_check_items: list[str],
     enable_brief_first_branching: bool = False,
     strict_script: bool = False,
+    enable_image_flow: bool = False,
 ) -> str:
     """Render the checklist-first step-wise intake scaffold for a design family.
 
@@ -280,20 +299,33 @@ def render_brief(
     question text + option list. This stops the caller's Claude from inventing
     or rephrasing questions — the rendered brief becomes a fixed script rather
     than a soft guideline. Used by the Landing Page family.
+
+    When `enable_image_flow=True` (which `strict_script=True` implies) the
+    shared IMAGE & ICON RULES + IMAGE FLOW block is rendered into the brief so
+    the family's `images_choice` clarifying answer drives the server-owned
+    stock-image / icon sourcing flow (anti-fabrication + inline gallery +
+    per-provider attribution). Both Landing Page and Survey Funnel pull this
+    from the single `_IMAGE_ICON_RULES_BLOCK` constant — never duplicated.
     """
     ref_block = ""
     if references:
         ref_block = "References:\n" + "\n".join(f"  - {r}" for r in references) + "\n\n"
+
+    # strict_script implies the image flow; either flag turns the shared block on.
+    image_block = _IMAGE_ICON_RULES_BLOCK if (enable_image_flow or strict_script) else ""
 
     if strict_script:
         field_lines = "\n\n".join(
             _render_field_line_strict(cf, i + 1)
             for i, cf in enumerate(clarifying_fields)
         )
-        fields_header = _STRICT_SCRIPT_PREAMBLE + "Clarifying fields — STRICT SCRIPT (use each VERBATIM):"
+        fields_header = (
+            _STRICT_SCRIPT_PREAMBLE + image_block
+            + "Clarifying fields — STRICT SCRIPT (use each VERBATIM):"
+        )
     else:
         field_lines = "\n".join(_render_field_line(cf) for cf in clarifying_fields)
-        fields_header = "Clarifying fields (key — question if missing):"
+        fields_header = image_block + "Clarifying fields (key — question if missing):"
 
     defaults_lines = "\n".join(f"  - {k}: {v}" for k, v in defaults.items())
     sanity_line = " · ".join(sanity_check_items)
