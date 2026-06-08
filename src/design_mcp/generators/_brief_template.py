@@ -152,7 +152,7 @@ The server now owns image + icon sourcing. The prod bug that triggered this rule
 
 1. **NEVER write inline `<svg>` markup for icons.** For every icon in the design, call `fetch_icons` (during initial HTML generation) or `search_icons` (during iteration when the user wants alternatives). Icons come from the Iconify / Lucide library as real SVG markup the server hands back.
 2. **NEVER fabricate Pexels or Unsplash photo URLs.** For every `<img>` tag with an external photo, the URL must come from one of:
-   - `search_stock_images` — call this during HTML generation, render the 6 returned candidates via AskUserQuestion (with thumbnail previews), embed the user's pick verbatim;
+   - `search_stock_images` — call this during HTML generation, SHOW the returned candidates as an inline numbered markdown-image gallery in chat FIRST (so the user actually SEES each photo), THEN present an AskUserQuestion to pick one, and embed the user's pick verbatim;
    - URLs the user pasted in chat — reuse them verbatim, no edits to the URL.
 3. **Allowed exceptions:** data URIs for tiny inline graphics (favicons, decorative gradients), CSS `background: linear-gradient(...)` blocks, logo URLs the user explicitly provided.
 4. **Required attribution for Pexels images:** render `Photo by <photographer>` (link to `photographer_url`) inside the image's `alt` text AND include a footer fine-print line: `Photos via <a href="https://pexels.com">Pexels</a>`. The `attribution_note` field returned by `search_stock_images` repeats this rule.
@@ -163,7 +163,10 @@ IMAGE FLOW — driven by the `images_choice` clarifying answer:
   After STEP 1 intake finishes, BEFORE generating HTML, prompt the user verbatim: "Paste your image URLs in chat now. Tell me which slot each goes to (hero, card 1, card 2, etc). I'll wait for you to paste them before generating." Wait for the paste. Embed each URL verbatim in the matching slot. Do NOT auto-substitute or alter the URLs.
 
 - `images_choice` = "Yes — search free Pexels stock photos for me"
-  During HTML generation, for each photo slot (hero, feature cards, sections), call `search_stock_images(query=<slot-specific keyword>)`. Render the 6 returned candidates as an AskUserQuestion with thumbnail previews and the photographer's name. User picks 1. Embed that URL + alt text + photographer attribution.
+  Per photo slot (hero, cards, sections): call `search_stock_images(query=<slot keyword>)`. AskUserQuestion options are TEXT-ONLY, so the user sees NO photo unless you render it in chat first. So, in this exact order:
+  1. POST AN INLINE NUMBERED MARKDOWN-IMAGE GALLERY (its own message) using each candidate's `url_medium` (~350px thumbnail) as the image src, one per line, so the user SEES every photo: `1. ![Photo by {photographer}]({url_medium})` … (numbered, one line per candidate). Do NOT skip it, do NOT describe photos in words instead, do NOT use `url_large` here (that's the embed, not the thumbnail).
+  2. THEN AskUserQuestion to pick one; labels reference the number + photographer (e.g. "1 — by {photographer}").
+  3. Embed the pick's `url_large` + alt + photographer attribution into the slot.
 
 - `images_choice` = "No — clean modern look with icons + gradients only"
   Generate HTML with SVG icons (always via `fetch_icons`) plus CSS gradient placeholders for any photo-shaped slots. NO `<img>` tags except a logo URL the user explicitly provided in clarifying answers.

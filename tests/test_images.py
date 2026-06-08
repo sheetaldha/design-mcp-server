@@ -372,6 +372,17 @@ class TestBriefRendersImageRules:
         # Footer fine-print is the path of least resistance for compliance.
         assert "Photos via" in text or "photographer" in text.lower()
 
+    def test_stock_branch_shows_inline_gallery_before_asking(self):
+        text = self._brief()
+        # AskUserQuestion options are text-only — the brief MUST tell Claude to
+        # render the candidates as an inline markdown-image gallery FIRST so the
+        # user actually sees the photos before choosing.
+        assert "INLINE NUMBERED MARKDOWN-IMAGE GALLERY" in text
+        # Uses url_medium (the ~350px thumbnail) as the inline preview src.
+        assert "url_medium" in text
+        # Example markdown-image form is spelled out verbatim.
+        assert "![Photo by {photographer}]({url_medium})" in text
+
 
 # ---------------------------------------------------------------------------
 # Landing-page field list — images_choice position + option set.
