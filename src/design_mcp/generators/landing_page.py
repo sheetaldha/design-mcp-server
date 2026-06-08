@@ -52,7 +52,8 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
     # 2. Brand / site name
     field(
         "site_name",
-        "Brand / site name to append after the page title (e.g. \"HealthBoost\")? Derive from the brief if obvious; otherwise ask.",
+        "Brand / site name to append after the page title (e.g. \"HealthBoost\")?",
+        agent_hint="Derive from the brief if obvious; otherwise ask.",
     ),
     # 3. Site brief — front-loaded for the brief-first / skip-answered pattern
     field(
@@ -235,6 +236,11 @@ INSTRUCTIONS_SHORT = (
     "If `options` is null, ask as plain text.\n"
     "- If `is_checkpoint=true`: render the `checkpoint_payload` as a ✅/❓ "
     "summary message in chat (NOT AskUserQuestion). Wait for user reply.\n"
+    "- If `agent_hint` is non-null: it is an AGENT-ONLY directive — act on it "
+    "BEFORE asking and NEVER render it to the user. Try to resolve the answer "
+    "from the brief / prior context first; if you can, call "
+    "`submit_clarifying_answer` with that value and skip the question. Only ask "
+    "the user when the hint can't be satisfied from what you already know.\n"
     "\n"
     "After the user answers, call "
     "`submit_clarifying_answer(design_id, field_key, answer)`. The response "

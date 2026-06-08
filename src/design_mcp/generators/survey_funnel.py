@@ -89,7 +89,8 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
     field("audience", "Who is the funnel qualifying? (persona, situation, decision)"),
     field(
         "site_name",
-        "Brand / site name to append after the page title (e.g. \"SolarQuotes\")? Derive from the brief if obvious; otherwise ask.",
+        "Brand / site name to append after the page title (e.g. \"SolarQuotes\")?",
+        agent_hint="Derive from the brief if obvious; otherwise ask.",
     ),
     field(
         "steps",

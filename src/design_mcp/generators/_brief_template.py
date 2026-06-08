@@ -37,12 +37,19 @@ class ClarifyingField:
     the intake continues. The brief template renders these differently
     (summary + confirm/change/back-up prompt) and skips them entirely from
     the "missing field" counting used for `*Q N of M*` progress markers.
+
+    `agent_hint` carries a directive to the CALLER'S Claude — NOT user-facing
+    copy. It tells Claude how to resolve the field before asking (e.g. "derive
+    from the brief if obvious; otherwise ask"). The caller must act on it and
+    must NEVER render it into the user-facing question. Keeping it out of
+    `question` stops the instruction leaking into AskUserQuestion / chat.
     """
 
     key: str
     question: str
     suggested_options: Optional[tuple[str, ...]] = None
     is_checkpoint: bool = False
+    agent_hint: Optional[str] = None
 
 
 def field(
@@ -50,17 +57,23 @@ def field(
     question: str,
     *options: str,
     is_checkpoint: bool = False,
+    agent_hint: Optional[str] = None,
 ) -> ClarifyingField:
     """Convenience constructor — `field("k", "q?", "A", "B")` vs the dataclass form.
 
     Pass `is_checkpoint=True` for a summary-and-confirm pseudo-field that
     doesn't take an answer but pauses the intake for user review.
+
+    Pass `agent_hint="..."` for an agent-only directive (how to resolve the
+    field before asking) that must NOT be shown to the user — see
+    `ClarifyingField`.
     """
     return ClarifyingField(
         key=key,
         question=question,
         suggested_options=tuple(options) if options else None,
         is_checkpoint=is_checkpoint,
+        agent_hint=agent_hint,
     )
 
 
@@ -111,10 +124,16 @@ def _render_field_line(cf: ClarifyingField) -> str:
     text questions. Checkpoint pseudo-fields render the summary-and-confirm
     rubric instead.
     """
+    hint_line = (
+        f"\n      AGENT HINT (do NOT show the user — act on it first): {cf.agent_hint}"
+        if cf.agent_hint
+        else ""
+    )
     if cf.is_checkpoint:
         return (
             f"  - {cf.key} (CHECKPOINT — pseudo-field, do NOT ask for data): {cf.question}\n"
             f"      Render the summary-and-confirm rubric from STEP 1 (c) point 4."
+            f"{hint_line}"
         )
     if cf.suggested_options:
         opts = ", ".join(f'"{o}"' for o in cf.suggested_options)
@@ -122,10 +141,12 @@ def _render_field_line(cf: ClarifyingField) -> str:
             f"  - {cf.key}: {cf.question}\n"
             f"      When asking {cf.key}, prefer AskUserQuestion (multi-choice card UI) "
             f"with these options: [{opts}]. Always offer \"Other\" as a free-text escape."
+            f"{hint_line}"
         )
     return (
         f"  - {cf.key}: {cf.question}\n"
         f"      Ask {cf.key} as plain text — too varied for multi-choice."
+        f"{hint_line}"
     )
 
 
@@ -200,6 +221,12 @@ def _render_field_line_strict(cf: ClarifyingField, index: int) -> str:
     caller's Claude can copy them straight into AskUserQuestion without
     paraphrasing or reordering.
     """
+    hint_line = (
+        f"\n  AGENT HINT (NOT user-facing — resolve from context first, ask only if unresolved; "
+        f"never render this line): {cf.agent_hint}"
+        if cf.agent_hint
+        else ""
+    )
     if cf.is_checkpoint:
         return (
             f"Field {index} — {cf.key} (CHECKPOINT — not a question, do NOT use AskUserQuestion)\n"
@@ -208,7 +235,7 @@ def _render_field_line_strict(cf: ClarifyingField, index: int) -> str:
             f"  Accept: \"looks good\" / \"confirmed\" / \"continue\" → proceed to next field.\n"
             f"  Accept: \"change X to Y\" → update the named field, re-show the summary.\n"
             f"  Accept: \"go back to Z\" → re-ask the named field.\n"
-            f"  Prompt text (use VERBATIM as the lead-in line): \"{cf.question}\""
+            f"  Prompt text (use VERBATIM as the lead-in line): \"{cf.question}\"{hint_line}"
         )
     if cf.suggested_options:
         opts_block = "\n".join(f'    - "{o}"' for o in cf.suggested_options)
@@ -219,11 +246,13 @@ def _render_field_line_strict(cf: ClarifyingField, index: int) -> str:
             f"{opts_block}\n"
             f"  Tool: AskUserQuestion with the question text + option list above. "
             f"Do NOT invent additional options. (claude.ai's UI surfaces \"Other\" as a free-text escape automatically.)"
+            f"{hint_line}"
         )
     return (
         f"Field {index} — {cf.key}\n"
         f"  Question text (use VERBATIM): \"{cf.question}\"\n"
         f"  Options: none — free-text answer. Tool: plain-text prompt (NOT AskUserQuestion)."
+        f"{hint_line}"
     )
 
 

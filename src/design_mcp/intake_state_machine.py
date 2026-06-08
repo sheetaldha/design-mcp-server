@@ -115,6 +115,7 @@ class NextQuestion:
     is_checkpoint: bool                # if True, render summary NOT AskUserQuestion
     checkpoint_payload: Optional[dict] # set when is_checkpoint=True; else None
     instruction_for_claude: str        # short directive — copy this to chat as-is
+    agent_hint: Optional[str]          # agent-only directive; ACT on it, NEVER render to user
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable view (tuple -> list)."""
@@ -234,6 +235,7 @@ def next_question(
             is_checkpoint=True,
             checkpoint_payload=payload,
             instruction_for_claude=_CHECKPOINT_INSTRUCTION,
+            agent_hint=cf.agent_hint,
         )
 
     instruction = (
@@ -241,6 +243,13 @@ def next_question(
         if cf.suggested_options
         else _PLAIN_TEXT_INSTRUCTION
     )
+    if cf.agent_hint:
+        instruction = (
+            f"{instruction}\nAGENT HINT (act on this BEFORE asking; NEVER show it to "
+            f"the user): {cf.agent_hint} — if you can resolve the answer from the brief "
+            f"or prior context, call submit_clarifying_answer with that value and skip "
+            f"the question; only ask the user when it's genuinely unresolved."
+        )
     return NextQuestion(
         field_key=cf.key,
         position=position,
@@ -250,6 +259,7 @@ def next_question(
         is_checkpoint=False,
         checkpoint_payload=None,
         instruction_for_claude=instruction,
+        agent_hint=cf.agent_hint,
     )
 
 
