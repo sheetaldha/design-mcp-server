@@ -1446,21 +1446,32 @@ def get_preview_url(design_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def fetch_url_screenshots(url: str) -> dict:
-    """Take screenshots of an external URL at mobile, iPad, and desktop viewports.
+async def fetch_url_screenshots(url: str, fresh: bool = False) -> dict:
+    """Screenshot an external URL at mobile, iPad, and desktop viewports — and
+    READ it. This is your way to access ANY reference page, including JS / SPA
+    pages that block scraping: the returned images render the fully-loaded page,
+    and you read the copy + layout from them with your multimodal vision.
 
-    Use this when the user picks "Enhancement to an existing landing page" or
-    "Replica of an existing landing page" and provides a URL. Returns 3 image
-    URLs you can read via your multimodal vision so you have visual context
-    for the design work.
+    USE IT whenever the user gives a reference / sample / competitor URL — for
+    "Enhancement" or "Replica", and for a "New" page built from a reference
+    (the `reference_layout` answer). Do NOT tell the user you "can't access" or
+    "can't scrape" a page you can screenshot — screenshot it and read the
+    headline, sub-headline, CTA label, benefit bullets, and trust/footer lines
+    straight off the image.
 
-    The first matching provider (Microlink → ApiFlash → ScreenshotMachine)
-    wins per viewport. Results are cached for 24h per URL so repeat calls
-    inside the cache window do no HTTP at all.
+    Providers (ApiFlash → Microlink → ScreenshotMachine): ApiFlash drives a real
+    headless Chrome that renders client-side JS, so SPA pages come back readable.
+    Results are cached 24h per URL.
+
+    If a returned screenshot still looks blank, bot-blocked, or like a consent /
+    challenge wall, call again with `fresh=True` to bypass the 24h cache and
+    force a fresh render before falling back to asking the user to paste text.
 
     Args:
         url: HTTP/HTTPS URL of the page to screenshot. Internal / private
              / loopback IPs and non-http(s) schemes are blocked (SSRF guard).
+        fresh: when True, skip the 24h cache and re-render (overwrites the
+               cache). Use after a blocked / blank result.
 
     Returns:
         {
@@ -1475,7 +1486,7 @@ async def fetch_url_screenshots(url: str) -> dict:
     log.info("fetch_url_screenshots user=%s url=%s", user_email, url)
 
     try:
-        results = await fetch_screenshots(url)
+        results = await fetch_screenshots(url, fresh=fresh)
     except ValueError as exc:
         # URL validation failure (SSRF / bad scheme / non-resolving host)
         raise ValueError(f"URL invalid: {exc}") from exc

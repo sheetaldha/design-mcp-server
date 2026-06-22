@@ -111,7 +111,10 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "reference_layout",
         "Sample template or reference funnel to design from? Paste a URL or "
         "describe it — or confirm \"not required\" and I'll design fresh.",
-        agent_hint="Use any reference funnel URL / layout in the brief if present.",
+        agent_hint="Use any reference funnel URL / layout in the brief if present. "
+                   "If a reference URL is given, call fetch_url_screenshots on it and "
+                   "READ the copy + layout off the screenshots — never say you can't "
+                   "access it; if a shot looks blocked/blank, retry with fresh=True.",
         requirement="conditional",
     ),
     # 4. URL / path the funnel will live at — required.

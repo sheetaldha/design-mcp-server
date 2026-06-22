@@ -1,9 +1,16 @@
 """Multi-provider URL → screenshot orchestrator.
 
-Microlink is the default (no API key required, 50 req/day free).
-ApiFlash + ScreenshotMachine are fallbacks IF the respective env vars
-are set (APIFLASH_ACCESS_KEY, SCREENSHOTMACHINE_KEY). They're tried in
-order; first one to return a valid image URL wins.
+ApiFlash is PREFERRED when `APIFLASH_ACCESS_KEY` is set — it drives a real
+headless Chrome that actually renders client-side JS (React/Vue SPAs) and
+copes with bot-protected pages, so the screenshot shows the real on-page
+copy you can then read via vision. Microlink (no key, 50/day free) is the
+fallback, and ScreenshotMachine after that. Tried in order; first to return
+a valid image URL wins.
+
+History: Microlink used to be tried first, but it returns status="success"
+even when it captured a bot-challenge / blank pre-render, so the ApiFlash
+fallback never fired and JS pages came back unreadable. ApiFlash-first +
+JS-wait params (below) fixes that.
 
 Results are cached per-URL for 24 hours in the design_mcp_screenshot_cache
 table so a repeat fetch of the same URL inside the cache window does no
@@ -116,8 +123,10 @@ async def microlink_screenshot(
                 "viewport.width": viewport.width,
                 "viewport.height": viewport.height,
                 "fullPage": "true",
+                # Give client-side JS a chance to render before capture.
+                "waitUntil": "networkidle2",
             },
-            timeout=30.0,
+            timeout=45.0,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -149,8 +158,16 @@ async def apiflash_screenshot(
                 "full_page": "true",
                 "format": "png",
                 "response_type": "json",
+                # Real-Chrome render tuning so JS / SPA pages fully paint and
+                # lazy content loads before capture (this is the whole reason
+                # ApiFlash is preferred over Microlink for reference pages).
+                "wait_until": "network_idle",  # wait for XHR/JS to settle
+                "delay": "3",                   # extra seconds for late renders
+                "scroll_page": "true",          # trigger lazy-loaded sections
+                "fresh": "true",                # bypass ApiFlash's own CDN cache
+                "no_cookie_banners": "true",    # strip consent overlays
             },
-            timeout=30.0,
+            timeout=45.0,
         )
         resp.raise_for_status()
         return resp.json().get("url")
@@ -180,9 +197,13 @@ async def screenshotmachine_screenshot(
     )
 
 
+# ApiFlash first (real headless Chrome → renders JS / bot-protected SPAs);
+# Microlink + ScreenshotMachine are fallbacks. Each adapter no-ops (returns
+# None) when its key is absent, so ordering ApiFlash first is safe even
+# without a key — it simply falls through to Microlink.
 _PROVIDERS = [
-    ("microlink", microlink_screenshot),
     ("apiflash", apiflash_screenshot),
+    ("microlink", microlink_screenshot),
     ("screenshotmachine", screenshotmachine_screenshot),
 ]
 
@@ -191,18 +212,21 @@ _PROVIDERS = [
 # Orchestrator
 # ---------------------------------------------------------------------------
 
-async def fetch_screenshots(url: str) -> dict[str, ScreenshotResult]:
+async def fetch_screenshots(url: str, fresh: bool = False) -> dict[str, ScreenshotResult]:
     """Return a dict mapping viewport.label → ScreenshotResult for each of the 3 viewports.
 
     Tries providers in order per viewport. Raises ScreenshotError if all
     providers fail for any viewport. Raises ValueError if the URL is unsafe.
-    Checks the 24h PG cache before doing any HTTP.
+    Checks the 24h PG cache before doing any HTTP UNLESS ``fresh=True``, which
+    forces a re-render and overwrites the cache (use it when an earlier shot
+    came back blocked / blank so the bad capture isn't served again).
     """
     validate_url(url)
 
-    cached = _cache_get(url)
-    if cached is not None:
-        return cached
+    if not fresh:
+        cached = _cache_get(url)
+        if cached is not None:
+            return cached
 
     async with httpx.AsyncClient() as client:
         async def one_viewport(vp: Viewport) -> ScreenshotResult:

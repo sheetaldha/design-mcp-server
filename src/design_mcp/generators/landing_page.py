@@ -81,7 +81,10 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Sample template or reference layout to design from? Paste a URL or "
         "describe it — or confirm \"not required\" and I'll design fresh.",
         agent_hint="Use the Enhancement/Replica page URL or any reference layout "
-                   "in the brief if present; Enhancement/Replica expect one.",
+                   "in the brief if present; Enhancement/Replica expect one. If a "
+                   "reference URL is given, call fetch_url_screenshots on it and READ "
+                   "the copy + layout off the screenshots — never say you can't access "
+                   "it; if a shot looks blocked/blank, retry with fresh=True.",
         requirement="conditional",
     ),
     # 4. URL / path the page will live at — required.
