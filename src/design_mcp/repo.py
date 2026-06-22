@@ -62,8 +62,15 @@ def publish_design(
     chat_summary: str,
     user_email: str,
     assets: dict[str, bytes] | None = None,
+    brief_md: str = "",
 ) -> tuple[Path, str]:
-    """Write design files into a new dir, commit, push. Returns (design_dir, commit_sha)."""
+    """Write design files into a new dir, commit, push. Returns (design_dir, commit_sha).
+
+    Writes `<slug>.html`, `page-meta.yaml` (render manifest), `chat.md`
+    (human chat summary), `status.md`, and — when supplied — `brief.md`: the
+    MDF confirmed-brief deliverable (YAML front-matter + body) that doubles as
+    an operator handoff doc and a machine-parseable build input.
+    """
     repo = ensure_repo(cfg)
 
     design_dir = repo / "designs" / f"{date.today().isoformat()}-{slug}"
@@ -72,6 +79,8 @@ def publish_design(
     (design_dir / "page-meta.yaml").write_text(manifest_yaml, encoding="utf-8")
     (design_dir / "chat.md").write_text(chat_summary, encoding="utf-8")
     (design_dir / "status.md").write_text("drafted\n", encoding="utf-8")
+    if brief_md:
+        (design_dir / "brief.md").write_text(brief_md, encoding="utf-8")
 
     if assets:
         assets_dir = design_dir / "assets"

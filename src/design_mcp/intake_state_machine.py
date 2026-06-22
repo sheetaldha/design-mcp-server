@@ -30,10 +30,18 @@ State payload contract
         "page_intent": "...",
         ...
       },
-      "skipped": [str, ...],        # fields the user explicitly skipped
+      "skipped": [str, ...],        # OPTIONAL fields the user silently skipped
+      "not_required": [str, ...],   # CONDITIONAL fields explicitly confirmed N/A
       "checkpoint_state": str | None,   # "pending" | "confirmed"; only meaningful
                                         # while the current field is a checkpoint
     }
+
+``skipped`` and ``not_required`` both mark a field "handled" so traversal
+walks past it, but they mean different things: ``skipped`` is a silent skip
+of an *optional* field, while ``not_required`` is an *explicit* "Not
+required" confirmation of a *conditional* field (the strict gate the brief
+demands for integrations / tracking / DNQ). A *required* field can be
+neither — answering it with a skip/"Not required" reply raises ValueError.
 
 A missing key is treated as the empty/initial value (``0`` / ``{}`` /
 ``[]`` / ``None``) so a freshly-created draft can start with
@@ -97,6 +105,21 @@ _CHECKPOINT_INSTRUCTION = (
     "'go back to <field_key>' (rewind)."
 )
 
+# Appended to a field's instruction based on its requirement level so the
+# caller enforces the completeness gate in chat (the server enforces it too).
+_REQUIRED_SUFFIX = (
+    " THIS FIELD IS REQUIRED — the user MUST provide a real value. A 'skip' / "
+    "'none' / 'Not required' reply is NOT accepted; if they try, explain it's "
+    "required and re-ask. Do not call submit_clarifying_answer with an empty "
+    "or skip-style answer for this field."
+)
+_CONDITIONAL_SUFFIX = (
+    " THIS FIELD IS CONDITIONAL — if it genuinely does not apply, the user must "
+    "EXPLICITLY confirm 'Not required' (a silent skip is not enough). Submit "
+    "their reply verbatim: 'Not required' / 'N/A' records an explicit no-op, a "
+    "real value records the detail. Never silently skip it."
+)
+
 
 @dataclass(frozen=True)
 class NextQuestion:
@@ -116,6 +139,7 @@ class NextQuestion:
     checkpoint_payload: Optional[dict] # set when is_checkpoint=True; else None
     instruction_for_claude: str        # short directive — copy this to chat as-is
     agent_hint: Optional[str]          # agent-only directive; ACT on it, NEVER render to user
+    requirement: str                   # "required" | "conditional" | "optional"
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable view (tuple -> list)."""
@@ -139,6 +163,7 @@ def _normalise_state(state: Optional[dict]) -> dict:
     state.setdefault("current_field_index", 0)
     state.setdefault("collected", {})
     state.setdefault("skipped", [])
+    state.setdefault("not_required", [])
     state.setdefault("checkpoint_state", None)
     # Defensive: never let the index regress below zero.
     if state["current_field_index"] < 0:
@@ -147,13 +172,18 @@ def _normalise_state(state: Optional[dict]) -> dict:
 
 
 def _is_already_handled(state: dict, field: ClarifyingField) -> bool:
-    """A regular (non-checkpoint) field is 'handled' if it's been collected
-    or explicitly skipped. Checkpoints are tracked via ``checkpoint_state``
-    not ``collected``, so we never short-circuit them this way.
+    """A regular (non-checkpoint) field is 'handled' if it's been collected,
+    silently skipped (optional), or explicitly confirmed Not-required
+    (conditional). Checkpoints are tracked via ``checkpoint_state`` not
+    ``collected``, so we never short-circuit them this way.
     """
     if field.is_checkpoint:
         return False
-    return field.key in state["collected"] or field.key in state["skipped"]
+    return (
+        field.key in state["collected"]
+        or field.key in state["skipped"]
+        or field.key in state.get("not_required", [])
+    )
 
 
 def _total_remaining_from(field_list: list[ClarifyingField], state: dict) -> int:
@@ -189,6 +219,7 @@ def _build_checkpoint_payload(
         "collected": dict(state["collected"]),
         "remaining_fields": remaining,
         "skipped": list(state["skipped"]),
+        "not_required": list(state.get("not_required", [])),
     }
 
 
@@ -236,6 +267,7 @@ def next_question(
             checkpoint_payload=payload,
             instruction_for_claude=_CHECKPOINT_INSTRUCTION,
             agent_hint=cf.agent_hint,
+            requirement=cf.requirement,
         )
 
     instruction = (
@@ -250,6 +282,10 @@ def next_question(
             f"or prior context, call submit_clarifying_answer with that value and skip "
             f"the question; only ask the user when it's genuinely unresolved."
         )
+    if cf.requirement == "required":
+        instruction = instruction + _REQUIRED_SUFFIX
+    elif cf.requirement == "conditional":
+        instruction = instruction + _CONDITIONAL_SUFFIX
     return NextQuestion(
         field_key=cf.key,
         position=position,
@@ -260,6 +296,7 @@ def next_question(
         checkpoint_payload=None,
         instruction_for_claude=instruction,
         agent_hint=cf.agent_hint,
+        requirement=cf.requirement,
     )
 
 
@@ -269,6 +306,37 @@ def _is_skip_answer(answer: str) -> bool:
     if not norm:
         return True
     return norm in {"skip", "(skip)", "none", "n/a", "na", "no answer", "pass"}
+
+
+# Explicit "this doesn't apply" phrases for the conditional / required gate.
+# ANCHORED at the start of the answer (with a trailing word boundary) so only a
+# standalone NA confirmation counts — e.g. "Not required", "Not required —
+# design fresh", "no integration needed". A phrase buried inside a real answer
+# ("...SFTP not needed for the secondary feed", "no fluff, not needed paperwork")
+# must NOT be misread as NA, or a load-bearing integration detail gets silently
+# dropped (conditional) or a valid answer wrongly rejected (required).
+_NA_START_RE = re.compile(
+    r"^\s*[\"']?\s*(?:"
+    r"not\s+required|not\s+applicable|not\s+needed|not\s+req|"
+    r"no\s+integrations?|no\s+tracking|no\s+dnq|none\s+needed"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _is_na_answer(answer: str) -> bool:
+    """True when the reply means 'this field does not apply' (a skip token OR an
+    explicit, leading 'Not required'-style confirmation). The requirement level
+    decides how that is recorded — skipped (optional), not_required
+    (conditional), or rejected (required).
+
+    Matching is ANCHORED (skip-token exact-match via `_is_skip_answer`, NA
+    phrases only at the START of the answer) so a phrase appearing inside a real
+    free-text answer never misclassifies it as a no-op.
+    """
+    if _is_skip_answer(answer):
+        return True
+    return bool(_NA_START_RE.match(answer or ""))
 
 
 def _field_index_by_key(
@@ -346,21 +414,37 @@ def submit_answer(
     if expected.is_checkpoint:
         return _apply_checkpoint_answer(field_list, norm, expected, answer)
 
-    # Regular field: skip vs record + advance.
-    if _is_skip_answer(answer):
-        if expected.key not in norm["skipped"]:
-            norm["skipped"] = list(norm["skipped"]) + [expected.key]
-        # Clear any stale collected value for this key so re-traversal
-        # treats it as skipped, not answered.
+    # Regular field. Route a no-op reply ("skip" / empty / "Not required" /
+    # "N/A" / "no integration") on the field's requirement level:
+    #   - required    -> REJECT (a required field can't be skipped)
+    #   - conditional -> record an EXPLICIT Not-required confirmation
+    #   - optional    -> silent skip (legacy behaviour)
+    if _is_na_answer(answer):
+        if expected.requirement == "required":
+            raise ValueError(
+                f"field_key {expected.key!r} is REQUIRED and cannot be skipped "
+                f"or marked 'Not required'; provide a real value."
+            )
+        # Clear any stale collected value so re-traversal treats it as handled
+        # via skipped / not_required, not answered.
         norm["collected"] = {
             k: v for k, v in norm["collected"].items() if k != expected.key
         }
+        if expected.requirement == "conditional":
+            if expected.key not in norm["not_required"]:
+                norm["not_required"] = list(norm["not_required"]) + [expected.key]
+            norm["skipped"] = [k for k in norm["skipped"] if k != expected.key]
+        else:  # optional
+            if expected.key not in norm["skipped"]:
+                norm["skipped"] = list(norm["skipped"]) + [expected.key]
+            norm["not_required"] = [k for k in norm["not_required"] if k != expected.key]
     else:
         norm["collected"] = {**norm["collected"], expected.key: answer}
-        # If we previously skipped this field and the user is now answering,
-        # take it out of the skipped list.
+        # A real answer clears any prior skip / not-required marker.
         if expected.key in norm["skipped"]:
             norm["skipped"] = [k for k in norm["skipped"] if k != expected.key]
+        if expected.key in norm["not_required"]:
+            norm["not_required"] = [k for k in norm["not_required"] if k != expected.key]
 
     norm["current_field_index"] = idx + 1
     # Leaving a regular field always clears any lingering checkpoint state.
@@ -387,11 +471,15 @@ def _apply_checkpoint_answer(
             raise ValueError(
                 f"go back: field_key {target_key!r} is not a known clarifying field"
             )
-        # Reopen the target: drop it from collected + skipped so it re-asks.
+        # Reopen the target: drop it from collected + skipped + not_required
+        # so it re-asks.
         state["collected"] = {
             k: v for k, v in state["collected"].items() if k != target_key
         }
         state["skipped"] = [k for k in state["skipped"] if k != target_key]
+        state["not_required"] = [
+            k for k in state.get("not_required", []) if k != target_key
+        ]
         state["current_field_index"] = target_idx
         state["checkpoint_state"] = None
         return state
@@ -406,8 +494,12 @@ def _apply_checkpoint_answer(
                 f"change: field_key {target_key!r} is not a known clarifying field"
             )
         state["collected"] = {**state["collected"], target_key: new_value}
-        # If the target was skipped, it's now answered — drop from skipped.
+        # If the target was skipped / marked Not-required, it's now answered —
+        # drop it from both lists.
         state["skipped"] = [k for k in state["skipped"] if k != target_key]
+        state["not_required"] = [
+            k for k in state.get("not_required", []) if k != target_key
+        ]
         # Stay on the checkpoint, re-show the summary.
         state["checkpoint_state"] = "pending"
         return state

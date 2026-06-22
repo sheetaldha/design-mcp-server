@@ -25,7 +25,13 @@ from ..manifest import (
     FeatureCard,
     LandingPageManifest,
 )
-from ._brief_template import LANDING_PAGE_DEFAULTS, ClarifyingField, field, render_brief
+from ._brief_template import (
+    INSTRUCTIONS_SHORT,
+    LANDING_PAGE_DEFAULTS,
+    ClarifyingField,
+    field,
+    render_brief,
+)
 
 log = logging.getLogger(__name__)
 
@@ -40,29 +46,71 @@ def _load_contract() -> dict[str, Any]:
     return yaml.safe_load(CONTRACT_PATH.read_text())
 
 
+# Review-first intake: page_intent + the brief upload come first so the
+# caller can parse the brief and auto-fill everything below, then ask ONLY
+# the gaps. Requirement levels drive the completeness gate:
+#   required    — must be provided (skip rejected)
+#   conditional — provide OR explicitly confirm "Not required" (strict; the
+#                 production-critical integration/tracking gates)
+#   optional    — silent skip fine
+# The single terminal `review_checkpoint` is the "summarise the confirmed
+# brief, then generate" gate — once all required are collected and all
+# conditional resolved, it's the last thing the state machine surfaces.
 _CLARIFYING_FIELDS: list[ClarifyingField] = [
-    # 1. Page intent — scope-based routing (new microsite / enhancement / replica)
+    # 1. Scope routing — required (new microsite / enhancement / replica).
     field(
         "page_intent",
         "What kind of work is this?",
         "New microsite landing page",
         "Enhancement to an existing landing page",
         "Replica of an existing landing page",
+        requirement="required",
     ),
-    # 2. Brand / site name
+    # 2. Brief upload — front-loaded so the review-first pass can auto-fill the
+    #    rest. Optional as a question (the brief may already be in chat).
+    field(
+        "site_brief",
+        "Upload or paste your brief — sample template, copy, wireframes, "
+        "reference URLs, integration/API docs, anything. The more you share, "
+        "the fewer questions I'll ask. I'll review it first and only ask for "
+        "what's missing.",
+    ),
+    # 3. Reference layout / sample template — conditional (provide or "none").
+    field(
+        "reference_layout",
+        "Sample template or reference layout to design from? Paste a URL or "
+        "describe it — or confirm \"not required\" and I'll design fresh.",
+        agent_hint="Use the Enhancement/Replica page URL or any reference layout "
+                   "in the brief if present; Enhancement/Replica expect one.",
+        requirement="conditional",
+    ),
+    # 4. URL / path the page will live at — required.
+    field(
+        "page_path",
+        "What URL or path should this landing page live at? (e.g. "
+        "\"/health-cover\" or \"healthboost.com.au/quote\")",
+        agent_hint="Derive from the brief if a domain/path is given; otherwise ask.",
+        requirement="required",
+    ),
+    # 5. Brand / site name — required.
     field(
         "site_name",
         "Brand / site name to append after the page title (e.g. \"HealthBoost\")?",
         agent_hint="Derive from the brief if obvious; otherwise ask.",
+        requirement="required",
     ),
-    # 3. Site brief — front-loaded for the brief-first / skip-answered pattern
+    # 6. Content / copy — required; user supplies it OR explicitly delegates
+    #    drafting (AI copy is allowed, then surfaced for review).
     field(
-        "site_brief",
-        "Upload or paste your brief — images, copy, wireframes, reference URLs, "
-        "anything. The more you share, the fewer questions I'll ask. I'll skip "
-        "any remaining questions already answered in your brief.",
+        "content_copy",
+        "Paste the page copy/content (headline, body, benefits) — or say "
+        "\"you write it\" and I'll draft copy for your review.",
+        agent_hint="Use copy found in the brief if present. \"you write it\" / "
+                   "\"draft it\" is a VALID answer — AI-generated copy is allowed; "
+                   "surface it for confirmation, never ship unseen. This is not a skip.",
+        requirement="required",
     ),
-    # 4. Primary CTA
+    # 7. Primary CTA — required.
     field(
         "primary_cta",
         "Single action you want a visitor to take?",
@@ -71,28 +119,50 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Sign up / create account",
         "Download / get the guide",
         "Contact us",
+        requirement="required",
     ),
-    # 5. Images choice — drives the server-controlled image-sourcing flow.
-    # Stops Claude from fabricating Unsplash / Pexels URLs (the prod issue
-    # that triggered the Pexels + Iconify image bundle).
+    # 8. Images — required (drives the server-controlled image-sourcing flow;
+    #    stops Claude from fabricating Pexels / Unsplash URLs).
     field(
         "images_choice",
         "Do you want images on this page?",
         "Yes — I'll paste image URLs in chat now",
         "Yes — search free stock photos (Pexels + Unsplash) for me",
         "No — clean modern look with icons + gradients only",
+        requirement="required",
     ),
-    # 6. Review checkpoint — pseudo-field; no data collected
+    # 9. Palette / brand colours — required.
     field(
-        "review_checkpoint",
-        "Summary of everything collected so far + remaining questions — confirm or change?",
-        is_checkpoint=True,
+        "palette",
+        "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose.",
+        requirement="required",
     ),
-    # 7. Palette
-    field("palette", "Brand colours / fonts / page to match? Say \"you pick\" and I'll choose."),
-    # 8. Benefits
+    # 10. Lead delivery / integrations — CONDITIONAL (strict). At least one
+    #     method, or an explicit "no integration". Load-bearing: a wrong or
+    #     missing integration breaks lead delivery.
+    field(
+        "integrations",
+        "How should leads be delivered? Give the client name + method (API + "
+        "docs, Google Sheet, SFTP, or other) with details — or confirm \"no "
+        "integration\" to keep leads in the generic store only.",
+        agent_hint="Pull any client name / API docs / Google Sheet / SFTP details "
+                   "from the brief. Never silently skip — missing integration "
+                   "breaks the system; require an explicit answer either way.",
+        requirement="conditional",
+    ),
+    # 11. Tracking pixels / scripts — CONDITIONAL (strict). Provide or confirm none.
+    field(
+        "tracking",
+        "Tracking pixels or scripts to embed? Paste any GTM container ID "
+        "(GTM-XXXXXXX), Meta/Google pixels, or tracking scripts — or confirm "
+        "\"no tracking\".",
+        agent_hint="Use any GTM ID / pixels in the brief. Must be explicitly "
+                   "resolved either way — never silently skipped.",
+        requirement="conditional",
+    ),
+    # 12. Benefits — optional.
     field("benefits", "Top 2 or 3 benefits or proof points? (numbers, badges, testimonials)"),
-    # 9. Tone
+    # 13. Tone — optional.
     field(
         "tone",
         "Tone of voice?",
@@ -101,18 +171,22 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Playful + bold",
         "Authoritative + premium",
     ),
-    # 10. GTM tag
-    field(
-        "gtm_tag",
-        "Google Tag Manager container ID to embed? Paste it (e.g. GTM-XXXXXXX) or skip.",
-    ),
-    # 11. References to avoid
+    # 14. References to avoid — optional.
     field("references_to_avoid", "Anything to avoid? (competitor styles, forbidden words, imagery)"),
-    # 12. Optional sections
+    # 15. Optional sections — optional.
     field(
         "optional_sections_content",
         "Testimonials, FAQ, or trust badges? If yes: 2-6 testimonials "
         "(quote+author+location), 3-10 FAQs (Q&A), 3-8 trust badges (label+detail). Or skip.",
+    ),
+    # 16. Final confirmation — terminal checkpoint. Only reached once every
+    #     required field is collected and every conditional one is resolved.
+    #     This is the "summarise the confirmed brief, then generate" gate.
+    field(
+        "review_checkpoint",
+        "Confirmed brief — review every input below. Reply \"confirmed\" to "
+        "generate, or \"change <field> to <value>\" / \"go back to <field>\".",
+        is_checkpoint=True,
     ),
 ]
 
@@ -223,32 +297,10 @@ def make_design_brief(
 # Server-driven intake — short directive paired with `next_question` payloads
 # ---------------------------------------------------------------------------
 
-# Tight imperative that replaces the long prose `instructions` blob once the
-# server owns the question flow. Each `next_question` returned by
-# `start_landing_page_intake` / `submit_clarifying_answer` carries the verbatim
-# text + options the caller's Claude must surface — this directive only
-# tells it WHICH tool to use and WHEN to advance.
-INSTRUCTIONS_SHORT = (
-    "INTAKE FLOW: This server controls the clarifying-question flow. For each "
-    "`next_question` returned:\n"
-    "- If `is_checkpoint=false`: call AskUserQuestion with `question_text` and "
-    "`options` EXACTLY as given (verbatim, in order, no rephrasing). "
-    "If `options` is null, ask as plain text.\n"
-    "- If `is_checkpoint=true`: render the `checkpoint_payload` as a ✅/❓ "
-    "summary message in chat (NOT AskUserQuestion). Wait for user reply.\n"
-    "- If `agent_hint` is non-null: it is an AGENT-ONLY directive — act on it "
-    "BEFORE asking and NEVER render it to the user. Try to resolve the answer "
-    "from the brief / prior context first; if you can, call "
-    "`submit_clarifying_answer` with that value and skip the question. Only ask "
-    "the user when the hint can't be satisfied from what you already know.\n"
-    "\n"
-    "After the user answers, call "
-    "`submit_clarifying_answer(design_id, field_key, answer)`. The response "
-    "includes the NEXT `next_question`, or `null` when intake is complete.\n"
-    "\n"
-    "When `next_question` is `null`, proceed to STEP 2 (outline) per the "
-    "existing contract (see `instructions_legacy` for the full runbook)."
-)
+# INSTRUCTIONS_SHORT — the tight imperative that drives the server-owned
+# question flow — is shared across both families (single source of truth in
+# _brief_template.py). Imported above and re-exported here so existing callers
+# (`server.py` reads `landing_gen.INSTRUCTIONS_SHORT`) keep working.
 
 
 def landing_page_field_list():

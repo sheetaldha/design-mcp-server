@@ -28,6 +28,32 @@ from design_mcp.generators._brief_template import field, ClarifyingField
 from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
 
 
+# Canonical landing-page walk for the production 16-field intake, in field
+# order. Required fields carry real answers; conditional fields say "Not
+# required"; optional fields carry a value or "skip"; the terminal checkpoint
+# advances on "looks good". Shared by the integration tests below.
+LANDING_WALK: list[tuple[str, str]] = [
+    ("page_intent", "New microsite landing page"),
+    ("site_brief", "brief paste"),
+    ("reference_layout", "Not required"),
+    ("page_path", "/health"),
+    ("site_name", "HealthBoost"),
+    ("content_copy", "you write it"),
+    ("primary_cta", "Request a quote"),
+    ("images_choice", "No — clean modern look with icons + gradients only"),
+    ("palette", "modern blue"),
+    ("integrations", "Not required"),
+    ("tracking", "Not required"),
+    ("benefits", "fast"),
+    ("tone", "Friendly + casual"),
+    # A real value (not the skip token "none") so this optional field lands
+    # in `collected`, not `skipped`.
+    ("references_to_avoid", "no competitor styles"),
+    ("optional_sections_content", "no optional sections"),
+    ("review_checkpoint", "looks good"),
+]
+
+
 # ---------------------------------------------------------------------------
 # Helpers — short field lists for the unit tests so we don't keep poking at
 # the production landing-page list (which has its own integration coverage).
@@ -316,69 +342,179 @@ class TestLandingPageFieldListIntegration:
         )
 
     def test_full_walk_records_every_field_and_ends_with_none(self):
-        """Walk every non-checkpoint field with a stub answer, advance the
-        checkpoint via 'continue', and confirm next_question returns None."""
+        """Walk the full 16-field landing intake in order: required fields get
+        real answers, conditional ones get 'Not required', optional ones get a
+        value-or-skip, then the terminal review_checkpoint advances via 'looks
+        good'. Confirm next_question returns None and that required/optional
+        real answers landed in collected while conditionals went to
+        not_required."""
         state: dict = {}
-        # Walk in order. Position 6 (index 5) is the checkpoint after
-        # images_choice was inserted at position 5.
-        answers = {
-            "page_intent": "New microsite landing page",
-            "site_name": "HealthBoost",
-            "site_brief": "uploaded brief paste",
-            "primary_cta": "Get started",
-            "images_choice": "No — clean modern look with icons + gradients only",
-            "palette": "modern blue",
-            "benefits": "fast, accurate, cheap",
-            "tone": "Friendly + casual",
-            "gtm_tag": "GTM-XXXXXXX",
-            "references_to_avoid": "no competitor styles",
-            "optional_sections_content": "no optional sections",
-        }
-        ordered_keys = [
-            "page_intent", "site_name", "site_brief", "primary_cta",
-            "images_choice",
-            "review_checkpoint",  # checkpoint
-            "palette", "benefits", "tone", "gtm_tag",
-            "references_to_avoid", "optional_sections_content",
-        ]
-        for key in ordered_keys:
+        # (field_key, answer) — the canonical landing walk, in field order.
+        for key, ans in LANDING_WALK:
             nq = sm.next_question(_CLARIFYING_FIELDS, state)
             assert nq is not None, f"next_question returned None before {key}"
             assert nq.field_key == key, (
                 f"expected {key!r} next, got {nq.field_key!r}"
             )
-            if key == "review_checkpoint":
-                state = sm.submit_answer(
-                    _CLARIFYING_FIELDS, state, key, "looks good",
-                )
-            else:
-                state = sm.submit_answer(
-                    _CLARIFYING_FIELDS, state, key, answers[key],
-                )
+            state = sm.submit_answer(_CLARIFYING_FIELDS, state, key, ans)
         # All done.
         assert sm.next_question(_CLARIFYING_FIELDS, state) is None
-        # Every non-checkpoint answer landed.
-        for key, value in answers.items():
-            assert state["collected"][key] == value
+        # Required + optional real answers landed in collected.
+        for key in (
+            "page_intent", "site_brief", "page_path", "site_name",
+            "content_copy", "primary_cta", "images_choice", "palette",
+            "benefits", "tone", "references_to_avoid",
+            "optional_sections_content",
+        ):
+            assert key in state["collected"], f"{key} missing from collected"
+        # Conditional fields answered "Not required" went to not_required.
+        for key in ("reference_layout", "integrations", "tracking"):
+            assert key in state["not_required"], (
+                f"{key} expected in not_required"
+            )
+            assert key not in state["collected"]
 
-    def test_checkpoint_position_is_six(self):
-        """The checkpoint sits at position 6 in the displayed flow (1-indexed).
+    def test_review_checkpoint_is_terminal(self):
+        """review_checkpoint is the LAST field (index 15) — once every prior
+        field is handled, it's the next_question the state machine surfaces."""
+        # It's the terminal field in the list.
+        assert _CLARIFYING_FIELDS[-1].key == "review_checkpoint"
+        assert _CLARIFYING_FIELDS[-1].is_checkpoint is True
 
-        It moved from 5→6 when images_choice was inserted at position 5.
-        """
-        # Walk past the five pre-checkpoint fields with real answers so the
-        # checkpoint comes up next.
+        # Handle all 15 prior fields (everything except the checkpoint), then
+        # the checkpoint should come up next.
         state: dict = {}
-        for key, ans in [
-            ("page_intent", "New microsite landing page"),
-            ("site_name", "HealthBoost"),
-            ("site_brief", "x"),
-            ("primary_cta", "Get started"),
-            ("images_choice", "No — clean modern look with icons + gradients only"),
-        ]:
+        for key, ans in LANDING_WALK[:-1]:  # all but review_checkpoint
             state = sm.submit_answer(_CLARIFYING_FIELDS, state, key, ans)
         nq = sm.next_question(_CLARIFYING_FIELDS, state)
         assert nq.field_key == "review_checkpoint"
         assert nq.is_checkpoint is True
-        # Position counts the checkpoint itself (6 nodes walked so far).
-        assert nq.position == 6
+        # It's the 16th node displayed (1-indexed terminal position).
+        assert nq.position == 16
+
+
+# ---------------------------------------------------------------------------
+# Requirement levels — required / conditional / optional + Not-required NA
+# ---------------------------------------------------------------------------
+
+def _req_fields() -> list[ClarifyingField]:
+    """One field per requirement level for completeness-gate tests."""
+    return [
+        field("must_have", "Required value?", requirement="required"),
+        field("maybe", "Conditional value?", requirement="conditional"),
+        field("extra", "Optional value?", requirement="optional"),
+    ]
+
+
+class TestRequirementLevels:
+    def test_next_question_exposes_requirement(self):
+        nq = sm.next_question(_req_fields(), {})
+        assert nq.field_key == "must_have"
+        assert nq.requirement == "required"
+        # Surfaced in the serialised payload too.
+        assert nq.to_dict()["requirement"] == "required"
+
+    def test_required_instruction_says_required(self):
+        nq = sm.next_question(_req_fields(), {})
+        assert "REQUIRED" in nq.instruction_for_claude
+
+    def test_conditional_instruction_says_not_required_confirm(self):
+        state = sm.submit_answer(_req_fields(), {}, "must_have", "yes")
+        nq = sm.next_question(_req_fields(), state)
+        assert nq.field_key == "maybe"
+        assert nq.requirement == "conditional"
+        assert "CONDITIONAL" in nq.instruction_for_claude
+
+    @pytest.mark.parametrize("reply", ["", "skip", "none", "N/A", "not required", "no integration needed"])
+    def test_required_field_rejects_skip_like_answers(self, reply):
+        with pytest.raises(ValueError, match=r"REQUIRED and cannot be skipped"):
+            sm.submit_answer(_req_fields(), {}, "must_have", reply)
+
+    def test_required_field_accepts_real_answer(self):
+        new = sm.submit_answer(_req_fields(), {}, "must_have", "a real value")
+        assert new["collected"]["must_have"] == "a real value"
+
+    def test_conditional_not_required_records_explicit_na(self):
+        state = sm.submit_answer(_req_fields(), {}, "must_have", "x")
+        state = sm.submit_answer(_req_fields(), state, "maybe", "Not required")
+        assert "maybe" in state["not_required"]
+        assert "maybe" not in state["collected"]
+        assert "maybe" not in state["skipped"]
+        # And it's treated as handled — traversal moves to the optional field.
+        nq = sm.next_question(_req_fields(), state)
+        assert nq.field_key == "extra"
+
+    def test_conditional_silent_skip_also_records_not_required(self):
+        # A bare "skip" on a conditional field still records an explicit NA
+        # (conditional fields are never silently skipped).
+        state = sm.submit_answer(_req_fields(), {}, "must_have", "x")
+        state = sm.submit_answer(_req_fields(), state, "maybe", "skip")
+        assert "maybe" in state["not_required"]
+        assert "maybe" not in state["skipped"]
+
+    def test_conditional_real_answer_records_collected(self):
+        state = sm.submit_answer(_req_fields(), {}, "must_have", "x")
+        state = sm.submit_answer(_req_fields(), state, "maybe", "Databowl via API")
+        assert state["collected"]["maybe"] == "Databowl via API"
+        assert "maybe" not in state["not_required"]
+
+    def test_optional_field_silent_skip(self):
+        state = sm.submit_answer(_req_fields(), {}, "must_have", "x")
+        state = sm.submit_answer(_req_fields(), state, "maybe", "Not required")
+        state = sm.submit_answer(_req_fields(), state, "extra", "skip")
+        assert "extra" in state["skipped"]
+        assert "extra" not in state["not_required"]
+        # Intake complete after all three handled.
+        assert sm.next_question(_req_fields(), state) is None
+
+    def test_answering_clears_prior_not_required(self):
+        # Mark conditional NA, then a real answer flips it out of not_required.
+        state = sm.submit_answer(_req_fields(), {}, "must_have", "x")
+        state = sm.submit_answer(_req_fields(), state, "maybe", "Not required")
+        assert "maybe" in state["not_required"]
+        # Rewind would re-ask; simulate a re-answer by going back via index.
+        state["current_field_index"] = 1
+        state["not_required"] = [k for k in state["not_required"] if k != "maybe"]
+        state = sm.submit_answer(_req_fields(), state, "maybe", "actual integration")
+        assert state["collected"]["maybe"] == "actual integration"
+        assert "maybe" not in state["not_required"]
+
+    def test_default_requirement_is_optional(self):
+        # Fields built without an explicit requirement stay optional so legacy
+        # behaviour (silent skip) is preserved.
+        f = field("legacy", "Legacy?")
+        assert f.requirement == "optional"
+
+    # ----- NA matching must be anchored, not substring (regression) -----
+
+    def test_conditional_real_answer_with_buried_na_phrase_is_collected(self):
+        """A genuine conditional answer that merely CONTAINS an NA phrase mid-
+        string must be stored verbatim, NOT routed to not_required. This is the
+        load-bearing case — a dropped integration detail breaks lead delivery."""
+        fields = _req_fields()
+        state = sm.submit_answer(fields, {}, "must_have", "x")
+        answer = "Use the API for new leads; SFTP not needed for the secondary feed"
+        state = sm.submit_answer(fields, state, "maybe", answer)
+        assert state["collected"]["maybe"] == answer
+        assert "maybe" not in state["not_required"]
+
+    def test_required_real_answer_with_buried_na_phrase_is_accepted(self):
+        """A required answer containing an NA phrase mid-string must NOT be
+        rejected — only a leading/standalone NA reply is a skip."""
+        fields = _req_fields()
+        answer = "No fluff, not needed paperwork — just fast quotes."
+        state = sm.submit_answer(fields, {}, "must_have", answer)
+        assert state["collected"]["must_have"] == answer
+
+    @pytest.mark.parametrize(
+        "reply",
+        ["Not required", "not required — design fresh", "no integration needed", "No tracking"],
+    )
+    def test_leading_na_phrase_still_counts_as_na(self, reply):
+        """A standalone / leading NA confirmation on a conditional field still
+        records an explicit Not-required."""
+        fields = _req_fields()
+        state = sm.submit_answer(fields, {}, "must_have", "x")
+        state = sm.submit_answer(fields, state, "maybe", reply)
+        assert "maybe" in state["not_required"]
+        assert "maybe" not in state["collected"]

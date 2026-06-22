@@ -40,7 +40,13 @@ from ..manifest import (
     SurveyFunnelManifest,
     ThemeTokens,
 )
-from ._brief_template import SURVEY_FUNNEL_DEFAULTS, ClarifyingField, field, render_brief
+from ._brief_template import (
+    INSTRUCTIONS_SHORT,
+    SURVEY_FUNNEL_DEFAULTS,
+    ClarifyingField,
+    field,
+    render_brief,
+)
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +80,13 @@ def make_design_brief(
     }
 
 
+# Review-first intake mirroring the landing-page family. Requirement levels
+# drive the completeness gate (required / conditional / optional); the strict
+# conditional fields (integrations, tracking, question_dependencies, dnq_rules)
+# are the "missing this breaks the system" gates. The terminal
+# `review_checkpoint` is the "summarise the confirmed brief, then generate" gate.
 _CLARIFYING_FIELDS: list[ClarifyingField] = [
+    # 1. Vertical — required.
     field(
         "vertical",
         "What vertical is this funnel qualifying for?",
@@ -85,28 +97,79 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Property",
         "Telco",
         "Other",
+        requirement="required",
     ),
-    field("audience", "Who is the funnel qualifying? (persona, situation, decision)"),
+    # 2. Brief upload — front-loaded for the review-first / skip-answered pass.
+    field(
+        "site_brief",
+        "Upload or paste your brief — sample template, survey questions, copy, "
+        "reference URLs, integration/API docs, anything. The more you share, the "
+        "fewer questions I'll ask. I'll review it first and only ask what's missing.",
+    ),
+    # 3. Reference layout / sample template — conditional (provide or "none").
+    field(
+        "reference_layout",
+        "Sample template or reference funnel to design from? Paste a URL or "
+        "describe it — or confirm \"not required\" and I'll design fresh.",
+        agent_hint="Use any reference funnel URL / layout in the brief if present.",
+        requirement="conditional",
+    ),
+    # 4. URL / path the funnel will live at — required.
+    field(
+        "page_path",
+        "What URL or path should this funnel live at? (e.g. \"/solar-quote\" "
+        "or \"solarquotes.com.au/start\")",
+        agent_hint="Derive from the brief if a domain/path is given; otherwise ask.",
+        requirement="required",
+    ),
+    # 5. Brand / site name — required.
     field(
         "site_name",
         "Brand / site name to append after the page title (e.g. \"SolarQuotes\")?",
         agent_hint="Derive from the brief if obvious; otherwise ask.",
+        requirement="required",
     ),
+    # 6. Audience — optional.
+    field("audience", "Who is the funnel qualifying? (persona, situation, decision)"),
+    # 7. Survey form questions / steps — required.
     field(
         "steps",
-        "How many steps (1 to 5) and what does each ask? Default: 3 (situation, timeframe, contact details).",
+        "How many steps (1 to 5) and what does each ask? List the actual survey "
+        "questions per step. Default: 3 (situation, timeframe, contact details).",
         "1 step (contact only)",
         "2 steps (qualifier + contact)",
         "3 steps (situation + timeframe + contact)",
         "4 steps (multi-qualifier)",
         "5 steps",
+        agent_hint="Use the survey questions from the brief if listed.",
+        requirement="required",
     ),
+    # 8. Question dependencies — CONDITIONAL (strict): branching / show-when rules.
+    field(
+        "question_dependencies",
+        "Any question dependencies? (e.g. show step 3 only when state = VIC, or "
+        "skip a question based on an earlier answer) — or confirm \"not required\".",
+        agent_hint="Capture any conditional show/skip logic from the brief. "
+                   "Must be explicitly resolved — silent skip not allowed.",
+        requirement="conditional",
+    ),
+    # 9. DNQ points — CONDITIONAL (strict): disqualification rules.
+    field(
+        "dnq_rules",
+        "Any DNQ (Do-Not-Qualify) points? (e.g. age < 18 → disqualify, or a "
+        "state/answer that fails the lead) — or confirm \"not required\".",
+        agent_hint="Capture disqualification rules from the brief. Load-bearing: "
+                   "missing DNQ logic lets bad leads through — never silently skip.",
+        requirement="conditional",
+    ),
+    # 10. OTP — optional.
     field(
         "otp",
         "OTP / SMS verification before submit — yes or skip?",
         "Yes, include OTP",
         "Skip OTP",
     ),
+    # 11. Final submit button label (the funnel's CTA) — required.
     field(
         "submit_label",
         "Final submit button label? (e.g. \"Get My Quotes\", \"See My Match\")",
@@ -114,7 +177,9 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "See my match",
         "Apply now",
         "Get my report",
+        requirement="required",
     ),
+    # 12. Post-submit behaviour — optional.
     field(
         "post_submit",
         "After submit — thank-you on the same page, redirect, or both?",
@@ -122,18 +187,22 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Redirect to external URL",
         "Both (thank-you then redirect)",
     ),
-    # Images choice — drives the server-controlled image-sourcing flow (shared
-    # with the landing_page family; same 3 options + same icon/gradient default).
-    # Stops Claude from fabricating Pexels / Unsplash URLs. Placed with the
-    # visual/styling questions (palette, tone) since it shapes the look.
+    # 13. Images — required (drives the server-controlled image-sourcing flow).
     field(
         "images_choice",
         "Do you want photos on this funnel?",
         "Yes — I'll paste image URLs in chat now",
         "Yes — search free stock photos (Pexels + Unsplash) for me",
         "No — clean modern look with icons + gradients only",
+        requirement="required",
     ),
-    field("palette", "Brand colours, tone (friendly / professional / playful / authoritative), styles to avoid?"),
+    # 14. Palette / brand colours — required.
+    field(
+        "palette",
+        "Brand colours, fonts, styles to avoid? Say \"you pick\" and I'll choose.",
+        requirement="required",
+    ),
+    # 15. Tone — optional.
     field(
         "tone",
         "Tone — friendly + casual, professional + clinical, playful, or authoritative?",
@@ -141,6 +210,34 @@ _CLARIFYING_FIELDS: list[ClarifyingField] = [
         "Professional + clinical",
         "Playful + bold",
         "Authoritative + premium",
+    ),
+    # 16. Lead delivery / integrations — CONDITIONAL (strict).
+    field(
+        "integrations",
+        "How should leads be delivered? Give the client name + method (API + "
+        "docs, Google Sheet, SFTP, or other) with details — or confirm \"no "
+        "integration\" to keep leads in the generic store only.",
+        agent_hint="Pull any client name / API docs / Google Sheet / SFTP details "
+                   "from the brief. Never silently skip — missing integration "
+                   "breaks lead delivery; require an explicit answer either way.",
+        requirement="conditional",
+    ),
+    # 17. Tracking pixels / scripts — CONDITIONAL (strict).
+    field(
+        "tracking",
+        "Tracking pixels or scripts to embed? Paste any GTM container ID "
+        "(GTM-XXXXXXX), Meta/Google pixels, or tracking scripts — or confirm "
+        "\"no tracking\".",
+        agent_hint="Use any GTM ID / pixels in the brief. Must be explicitly "
+                   "resolved either way.",
+        requirement="conditional",
+    ),
+    # 18. Final confirmation — terminal checkpoint (summarise → generate gate).
+    field(
+        "review_checkpoint",
+        "Confirmed brief — review every input below. Reply \"confirmed\" to "
+        "generate, or \"change <field> to <value>\" / \"go back to <field>\".",
+        is_checkpoint=True,
     ),
 ]
 
@@ -188,10 +285,22 @@ def _build_instructions(
         sanity_check_items=_SANITY_CHECK_ITEMS,
         # Reuse the SAME shared IMAGE & ICON RULES + IMAGE FLOW block the
         # landing_page family renders (single source of truth in
-        # _brief_template.py). Survey Funnel keeps the classic (non-strict)
-        # intake but opts into the shared image-sourcing flow.
-        enable_image_flow=True,
+        # _brief_template.py). strict_script=True gives the strict question
+        # script + the review-first classic intake (parse brief -> echo ✅/❓ ->
+        # ask only gaps); brief-first scope routing stays landing-only since it
+        # hardcodes page_intent, which the survey family doesn't have. Both
+        # families drive the same server-owned state machine via the field list.
+        strict_script=True,
     )
+
+
+def survey_funnel_field_list():
+    """Return the canonical clarifying-field list (used by the state machine).
+
+    Module-public accessor mirroring ``landing_page.landing_page_field_list``
+    so ``server.py`` can drive the server-owned intake for this family too.
+    """
+    return _CLARIFYING_FIELDS
 
 
 # ---------------------------------------------------------------------------

@@ -539,24 +539,24 @@ class TestBriefRendersImageRules:
 # ---------------------------------------------------------------------------
 
 class TestImagesChoiceField:
-    def test_field_at_index_4(self):
+    def test_field_at_index_7(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert _CLARIFYING_FIELDS[4].key == "images_choice"
+        assert _CLARIFYING_FIELDS[7].key == "images_choice"
 
     def test_field_options_verbatim_and_in_order(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        opts = _CLARIFYING_FIELDS[4].suggested_options
+        opts = _CLARIFYING_FIELDS[7].suggested_options
         assert opts == (
             "Yes — I'll paste image URLs in chat now",
             "Yes — search free stock photos (Pexels + Unsplash) for me",
             "No — clean modern look with icons + gradients only",
         )
 
-    def test_review_checkpoint_shifted_to_index_5(self):
+    def test_review_checkpoint_shifted_to_index_15(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert _CLARIFYING_FIELDS[5].key == "review_checkpoint"
-        assert _CLARIFYING_FIELDS[5].is_checkpoint is True
+        assert _CLARIFYING_FIELDS[15].key == "review_checkpoint"
+        assert _CLARIFYING_FIELDS[15].is_checkpoint is True
 
-    def test_total_field_count_is_twelve(self):
+    def test_total_field_count_is_sixteen(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert len(_CLARIFYING_FIELDS) == 12
+        assert len(_CLARIFYING_FIELDS) == 16

@@ -20,7 +20,14 @@ caller's session at run time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
+
+# Requirement level for a clarifying field — drives the completeness gate.
+#   "required"    — must be provided; a skip / "Not required" reply is REJECTED.
+#   "conditional" — must be provided OR explicitly confirmed "Not required"
+#                   (a silent skip is not enough — the user has to say so).
+#   "optional"    — silent skip is fine.
+Requirement = Literal["required", "conditional", "optional"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,12 @@ class ClarifyingField:
     from the brief if obvious; otherwise ask"). The caller must act on it and
     must NEVER render it into the user-facing question. Keeping it out of
     `question` stops the instruction leaking into AskUserQuestion / chat.
+
+    `requirement` sets the completeness level (see ``Requirement``):
+    "required" fields block intake until provided (a skip is rejected),
+    "conditional" fields must be provided or explicitly confirmed "Not
+    required", and "optional" fields may be skipped silently. Checkpoints
+    are always treated as optional regardless of this field.
     """
 
     key: str
@@ -50,6 +63,7 @@ class ClarifyingField:
     suggested_options: Optional[tuple[str, ...]] = None
     is_checkpoint: bool = False
     agent_hint: Optional[str] = None
+    requirement: Requirement = "optional"
 
 
 def field(
@@ -58,6 +72,7 @@ def field(
     *options: str,
     is_checkpoint: bool = False,
     agent_hint: Optional[str] = None,
+    requirement: Requirement = "optional",
 ) -> ClarifyingField:
     """Convenience constructor — `field("k", "q?", "A", "B")` vs the dataclass form.
 
@@ -67,6 +82,9 @@ def field(
     Pass `agent_hint="..."` for an agent-only directive (how to resolve the
     field before asking) that must NOT be shown to the user — see
     `ClarifyingField`.
+
+    Pass `requirement="required" | "conditional"` to raise the field above the
+    default "optional" — see `ClarifyingField` / `Requirement`.
     """
     return ClarifyingField(
         key=key,
@@ -74,23 +92,31 @@ def field(
         suggested_options=tuple(options) if options else None,
         is_checkpoint=is_checkpoint,
         agent_hint=agent_hint,
+        requirement=requirement,
     )
 
 
-# Per-family defaults used by speed-mode and missing-answer fallback.
+# Per-family defaults used by speed-mode and missing-answer fallback. Note:
+# speed-mode fills these as real VALUES (not skips), so even a "required" field
+# is satisfied; conditional fields get an explicit "no …" confirmation. The
+# manifest-level gate still enforces the production-critical blocks at submit.
 LANDING_PAGE_DEFAULTS: dict[str, str] = {
     "page_intent": "New microsite landing page",
-    "site_name": "Acquirely",
     "site_brief": "(none provided — full intake will run)",
+    "reference_layout": "not required — design fresh",
+    "page_path": "/landing",
+    "site_name": "Acquirely",
+    "content_copy": "you write it",
     "primary_cta": "Get started",
     # Speed-mode defaults to the icon-only path so we never silently fabricate
     # Pexels / Unsplash URLs. Operators who want photos explicitly answer the
     # images_choice clarifying question.
     "images_choice": "No — clean modern look with icons + gradients only",
     "palette": "modern blue (#2563eb primary, slate text)",
+    "integrations": "no integration — generic store only",
+    "tracking": "no tracking",
     "benefits": "three differentiated value props",
     "tone": "friendly + professional",
-    "gtm_tag": "(none — skip GTM embed)",
     "references_to_avoid": "none stated",
     # Speed-mode skips optional sections rather than fabricating fake
     # testimonials / FAQs / trust badges. If the user wants them, they answer
@@ -100,9 +126,14 @@ LANDING_PAGE_DEFAULTS: dict[str, str] = {
 
 SURVEY_FUNNEL_DEFAULTS: dict[str, str] = {
     "vertical": "Other",
+    "site_brief": "(none provided — full intake will run)",
+    "reference_layout": "not required — design fresh",
+    "page_path": "/funnel",
     "audience": "general consumers",
     "site_name": "Acquirely",
     "steps": "3 (situation, timeframe, contact details)",
+    "question_dependencies": "no dependencies",
+    "dnq_rules": "no DNQ rules",
     "otp": "skip OTP",
     "submit_label": "Get My Quotes",
     "post_submit": "thank-you on the same page",
@@ -112,7 +143,51 @@ SURVEY_FUNNEL_DEFAULTS: dict[str, str] = {
     "images_choice": "No — clean modern look with icons + gradients only",
     "palette": "modern blue (#2563eb primary, slate text)",
     "tone": "friendly + professional",
+    "integrations": "no integration — generic store only",
+    "tracking": "no tracking",
 }
+
+
+# Shared short directive for the server-driven intake (both families). Tells
+# the caller's Claude HOW to drive the state machine: review the brief first,
+# auto-fill what it can, ask only gaps, honour requirement levels + agent_hint.
+# Single source of truth — both landing_page and survey_funnel re-export it.
+INSTRUCTIONS_SHORT = (
+    "INTAKE FLOW: This server controls the clarifying-question flow. It is "
+    "REVIEW-FIRST — parse the user's brief, auto-fill every field you can from "
+    "it (call submit_clarifying_answer with the derived value), echo back what "
+    "you filled (✅) vs what's still missing (❓), and only ASK for the gaps. "
+    "Do NOT ask the user to resend things already in the brief. For each "
+    "`next_question` returned:\n"
+    "- If `is_checkpoint=false`: call AskUserQuestion with `question_text` and "
+    "`options` EXACTLY as given (verbatim, in order, no rephrasing). If "
+    "`options` is null, ask as plain text.\n"
+    "- If `is_checkpoint=true`: render the `checkpoint_payload` as a ✅/❓ "
+    "summary message in chat (NOT AskUserQuestion). Wait for user reply.\n"
+    "- `requirement` sets strictness:\n"
+    "    • \"required\" — the user MUST give a real value; never submit an "
+    "empty / 'skip' / 'Not required' answer (the server rejects it). Where the "
+    "question allows it, \"you write it\" delegation counts as a real answer.\n"
+    "    • \"conditional\" — if it doesn't apply, the user must EXPLICITLY "
+    "confirm 'Not required' (submit that verbatim); never silently skip. These "
+    "are the load-bearing integration / tracking / DNQ / dependency gates — be "
+    "strict, a missing one can break the system.\n"
+    "    • \"optional\" — a silent skip is fine.\n"
+    "- If `agent_hint` is non-null: it is an AGENT-ONLY directive — act on it "
+    "BEFORE asking and NEVER render it to the user. Resolve from the brief / "
+    "prior context first; if you can, submit that value and skip the question.\n"
+    "\n"
+    "After the user answers, call "
+    "`submit_clarifying_answer(design_id, field_key, answer)`. The response "
+    "includes the NEXT `next_question`, or `null` when intake is complete. If "
+    "it returns ok:false with a 'REQUIRED' error, that field can't be skipped — "
+    "ask for a real value and resubmit.\n"
+    "\n"
+    "When `next_question` is `null` the brief is confirmed — summarise the "
+    "confirmed brief, then proceed to STEP 2 (outline) per the existing "
+    "contract (see `instructions_legacy` for the full runbook). Do NOT generate "
+    "the HTML/MDF until intake is complete."
+)
 
 
 def _render_field_line(cf: ClarifyingField) -> str:
@@ -175,6 +250,40 @@ Why this matters: operators are non-technical and rely on a predictable, repeata
 
 
 # ---------------------------------------------------------------------------
+# REQUIRED-INPUTS COMPLETENESS GATE — the operator's review-first rules,
+# rendered into the brief so the caller reviews the brief, asks ONLY for gaps,
+# and never generates until every required/applicable input is confirmed. The
+# server enforces the same gate at submit_design; this is the in-chat half.
+# ---------------------------------------------------------------------------
+
+_COMPLETENESS_GATE_BLOCK = """REQUIRED-INPUTS COMPLETENESS GATE — review first, then generate.
+
+Before generating ANY HTML / MDF file, REVIEW the uploaded brief and confirm whether all required inputs are present. Required inputs:
+- Sample template or reference layout
+- URL or landing page path
+- Content / copy for the page
+- Images or image instructions
+- Survey form questions (survey funnel)
+- Question dependencies, if any (survey funnel)
+- Integration details, if required: client name · API documentation · Google Sheet details · SFTP details · any other delivery/integration method
+- Tracking pixels or tracking scripts
+- Colour palette / brand colours
+- DNQ points in the survey, if any (survey funnel)
+
+Rules:
+- Do NOT ask the user to resend everything.
+- Only ask for the SPECIFIC missing items.
+- If an item is not applicable, ask the user to confirm "Not required".
+- Do NOT generate the final HTML/MDF file until all required or applicable items are confirmed.
+- Once all required inputs are available, SUMMARISE the confirmed brief and then generate the page.
+- BE STRICT: a missing integration or DNQ detail can break the system — check thoroughly.
+
+The server enforces this too: submit_design is REJECTED until the clarifying intake is complete (every required field answered, every conditional provided or confirmed "Not required").
+
+"""
+
+
+# ---------------------------------------------------------------------------
 # IMAGE & ICON RULES + IMAGE FLOW — SINGLE SOURCE OF TRUTH for the
 # server-driven stock-image / icon flow. Family-agnostic: slot examples name
 # "hero, cards/steps, sections" so it reads correctly for both Landing Page
@@ -227,6 +336,11 @@ def _render_field_line_strict(cf: ClarifyingField, index: int) -> str:
         if cf.agent_hint
         else ""
     )
+    req_line = ""
+    if cf.requirement == "required":
+        req_line = "\n  [REQUIRED — a skip / \"Not required\" reply is rejected; need a real value]"
+    elif cf.requirement == "conditional":
+        req_line = "\n  [CONDITIONAL — provide a value OR have the user confirm \"Not required\"; never silently skip]"
     if cf.is_checkpoint:
         return (
             f"Field {index} — {cf.key} (CHECKPOINT — not a question, do NOT use AskUserQuestion)\n"
@@ -246,13 +360,13 @@ def _render_field_line_strict(cf: ClarifyingField, index: int) -> str:
             f"{opts_block}\n"
             f"  Tool: AskUserQuestion with the question text + option list above. "
             f"Do NOT invent additional options. (claude.ai's UI surfaces \"Other\" as a free-text escape automatically.)"
-            f"{hint_line}"
+            f"{req_line}{hint_line}"
         )
     return (
         f"Field {index} — {cf.key}\n"
         f"  Question text (use VERBATIM): \"{cf.question}\"\n"
         f"  Options: none — free-text answer. Tool: plain-text prompt (NOT AskUserQuestion)."
-        f"{hint_line}"
+        f"{req_line}{hint_line}"
     )
 
 
@@ -343,6 +457,10 @@ def render_brief(
     # strict_script implies the image flow; either flag turns the shared block on.
     image_block = _IMAGE_ICON_RULES_BLOCK if (enable_image_flow or strict_script) else ""
 
+    # The review-first completeness gate (operator's Rules) rides with the
+    # strict script — both families use it.
+    gate_block = _COMPLETENESS_GATE_BLOCK if strict_script else ""
+
     if strict_script:
         field_lines = "\n\n".join(
             _render_field_line_strict(cf, i + 1)
@@ -374,7 +492,7 @@ User's opening brief:
 
 {ref_block}Seven steps, in order. No HTML before the user has approved a written outline.
 
-{intake_block}
+{gate_block}{intake_block}
 
 {fields_header}
 {field_lines}

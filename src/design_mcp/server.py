@@ -606,18 +606,7 @@ def start_landing_page_intake(
         brief=brief,
         slug_hint=brief_payload["slug_hint"],
     )
-    if brief.strip():
-        drafts.update_clarifying_state(
-            record.design_id,
-            user_email,
-            {
-                "current_field_index": 0,
-                "collected": {"site_brief": brief.strip()},
-                "skipped": [],
-                "checkpoint_state": "pending",
-            },
-        )
-        record = drafts.get(record.design_id, user_email) or record
+    record = _seed_brief_into_state(record, user_email, brief)
     return _entry_response(record, brief_payload)
 
 
@@ -658,7 +647,31 @@ def start_survey_funnel_intake(
         brief=brief,
         slug_hint=brief_payload["slug_hint"],
     )
+    record = _seed_brief_into_state(record, user_email, brief)
     return _entry_response(record, brief_payload)
+
+
+def _seed_brief_into_state(record, user_email: str, brief: str):
+    """Pre-populate the brief upload into clarifying_state so the review-first
+    intake doesn't re-ask for it. No-op for an empty / whitespace brief.
+
+    Shared by both family entry tools so the brief-first / skip-answered pass
+    starts from the same place. Returns the (possibly refreshed) record.
+    """
+    if not brief.strip():
+        return record
+    drafts.update_clarifying_state(
+        record.design_id,
+        user_email,
+        {
+            "current_field_index": 0,
+            "collected": {"site_brief": brief.strip()},
+            "skipped": [],
+            "not_required": [],
+            "checkpoint_state": "pending",
+        },
+    )
+    return drafts.get(record.design_id, user_email) or record
 
 
 def _entry_response(record, brief_payload: dict) -> dict:
@@ -686,14 +699,21 @@ def _entry_response(record, brief_payload: dict) -> dict:
         ),
     }
 
-    if record.family == "landing-page":
-        field_list = landing_gen.landing_page_field_list()
+    # Both families now drive the server-owned intake state machine. Surface
+    # the first next_question + the shared short directive; fall back to
+    # prose-only if a family ever opts out (defensive — none do today).
+    try:
+        field_list = _field_list_for(record.family)
+    except ValueError:
+        field_list = None
+
+    if field_list is not None:
         # Fresh draft = empty state. The state machine normalises the missing
         # keys; we hand it `{}` so we don't repeat the defaults here.
         first_question = intake_sm.next_question(field_list, {})
         next_q_payload = first_question.to_dict() if first_question else None
         response.update(
-            instructions_short=landing_gen.INSTRUCTIONS_SHORT,
+            instructions_short=_instructions_short_for(record.family),
             instructions_legacy=brief_payload["instructions"],
             next_question=next_q_payload,
         )
@@ -737,6 +757,7 @@ async def _background_publish(
     html: str,
     manifest_yaml: str,
     chat_summary: str,
+    brief_md: str = "",
 ) -> None:
     """Run publish_design off the event loop, then mark the draft published or failed.
 
@@ -754,6 +775,7 @@ async def _background_publish(
             manifest_yaml=manifest_yaml,
             chat_summary=chat_summary,
             user_email=user_email,
+            brief_md=brief_md,
         )
         drafts.mark_published(design_id, user_email, repo_sha=sha, design_dir=str(design_dir))
         log.info(
@@ -829,6 +851,30 @@ async def submit_design(
             "status": record.status,
         }
 
+    # Completeness gate — the server half of "don't generate until confirmed".
+    # The brief must be fully reviewed: every required input answered and every
+    # conditional input resolved (provided or explicitly confirmed Not-required)
+    # before we accept a design. A missing integration / DNQ / tracking gate can
+    # break the live system, so this is strict.
+    incompleteness = _brief_incompleteness(record.family, record.clarifying_state)
+    if incompleteness:
+        return {
+            "ok": False,
+            "design_id": design_id,
+            "errors": [
+                "brief incomplete — cannot accept a design until the clarifying "
+                "intake is confirmed. Outstanding: " + "; ".join(incompleteness)
+            ],
+            "status": record.status,
+            "intake_complete": False,
+            "hint": (
+                "Finish the clarifying intake via submit_clarifying_answer until "
+                "next_question is null — required fields must be answered and "
+                "conditional ones provided or confirmed 'Not required' — then "
+                "call submit_design again."
+            ),
+        }
+
     errors: list[str] = []
 
     # 1. Manifest validation via the family's Pydantic model — SYNC, fast.
@@ -860,6 +906,7 @@ async def submit_design(
     manifest_dict = manifest_obj.model_dump(mode="json")
     slug = manifest_dict.get("slug") or record.slug_hint or "untitled"
     chat_summary = _build_chat_summary(record.brief, slug, record.family, manifest_dict)
+    brief_md = _build_brief_md(record, slug, manifest_dict)
 
     # 3. Persist the validated payload. record_submission flips status to
     #    "submitted"; for publish=True we then re-flip to "submitting" so the
@@ -895,6 +942,7 @@ async def submit_design(
                 html=html,
                 manifest_yaml=manifest_yaml,
                 chat_summary=chat_summary,
+                brief_md=brief_md,
             )
         )
         result.update(
@@ -1118,10 +1166,55 @@ def _field_list_for(family: str):
     """Return the clarifying-field list for ``family`` or raise ValueError."""
     if family == "landing-page":
         return landing_gen.landing_page_field_list()
+    if family == "survey-funnel":
+        return survey_gen.survey_funnel_field_list()
     raise ValueError(
-        f"family {family!r} does not use the server-driven intake state "
-        "machine (only landing-page supports it in v1)"
+        f"family {family!r} does not use the server-driven intake state machine"
     )
+
+
+def _instructions_short_for(family: str) -> str:
+    """Return the short intake directive for ``family`` (shared across both)."""
+    if family == "survey-funnel":
+        return survey_gen.INSTRUCTIONS_SHORT
+    return landing_gen.INSTRUCTIONS_SHORT
+
+
+def _brief_incompleteness(family: str, clarifying_state: Optional[dict]) -> list[str]:
+    """Return human-readable reasons the brief is incomplete, or [] if complete.
+
+    The server hard-gate for "don't generate until confirmed": every REQUIRED
+    field must be collected, and every CONDITIONAL field must be resolved
+    (either collected or explicitly confirmed Not-required). Optional fields
+    and checkpoints don't gate. Families that don't use the state machine
+    return [] (no gate).
+
+    This is an EXPLICIT per-field check (not just "next_question is None") so a
+    malformed / hand-seeded state can't slip an unresolved required field past
+    the gate.
+    """
+    try:
+        field_list = _field_list_for(family)
+    except ValueError:
+        return []
+    state = clarifying_state or {}
+    collected = set((state.get("collected") or {}).keys())
+    not_required = set(state.get("not_required") or [])
+    missing: list[str] = []
+    for cf in field_list:
+        if cf.is_checkpoint:
+            continue
+        if cf.requirement == "required" and cf.key not in collected:
+            missing.append(f"required '{cf.key}' not answered")
+        elif (
+            cf.requirement == "conditional"
+            and cf.key not in collected
+            and cf.key not in not_required
+        ):
+            missing.append(
+                f"conditional '{cf.key}' unresolved (provide it or confirm 'Not required')"
+            )
+    return missing
 
 
 def _next_question_payload(family: str, state: dict) -> Optional[dict]:
@@ -1555,6 +1648,70 @@ def _build_chat_summary(brief: str, slug: str, family: str, manifest_dict: dict)
             f"- theme: primary={theme.get('color_primary')}, accent={theme.get('color_accent')}",
         ])
     return "\n".join(parts) + "\n"
+
+
+def _build_brief_md(record, slug: str, manifest_dict: dict) -> str:
+    """Build the `brief.md` deliverable (the MDF): YAML front-matter (a
+    machine-parseable map of every confirmed clarifying input) plus a
+    human-readable body.
+
+    Sourced from the CONFIRMED clarifying intake (`record.clarifying_state`),
+    so it captures the inputs that don't live in the render manifest —
+    integrations, tracking, DNQ rules, question dependencies, reference layout,
+    page path — each with an explicit `not_required` marker when the user
+    confirmed it doesn't apply. This is both an operator handoff doc and a
+    build-input definition for downstream tooling (Skill B / the backend).
+    """
+    family = record.family
+    state = record.clarifying_state or {}
+    collected = dict(state.get("collected") or {})
+    not_required = list(state.get("not_required") or [])
+    skipped = list(state.get("skipped") or [])
+
+    try:
+        field_list = _field_list_for(family)
+    except ValueError:
+        field_list = []
+
+    inputs: dict[str, Any] = {}
+    body_lines: list[str] = []
+    for cf in field_list:
+        if cf.is_checkpoint:
+            continue
+        if cf.key in collected:
+            val = collected[cf.key]
+            inputs[cf.key] = val
+            body_lines.append(f"- **{cf.key}** ({cf.requirement}): {val}")
+        elif cf.key in not_required:
+            inputs[cf.key] = {"not_required": True}
+            body_lines.append(f"- **{cf.key}** ({cf.requirement}): _Not required_")
+        elif cf.key in skipped:
+            inputs[cf.key] = {"skipped": True}
+            body_lines.append(f"- **{cf.key}** ({cf.requirement}): _(skipped)_")
+        # Unanswered fields are omitted; the completeness gate guarantees every
+        # required + conditional field is resolved before we ever get here.
+
+    front = {
+        "slug": slug,
+        "family": family,
+        "manifest": "page-meta.yaml",
+        "page": f"{slug}.html",
+        "inputs": inputs,
+        "not_required": not_required,
+        "skipped": skipped,
+    }
+    fm = yaml.dump(
+        front, sort_keys=False, default_flow_style=False, allow_unicode=True
+    ).rstrip()
+    body = "\n".join(body_lines) if body_lines else "_(no clarifying inputs recorded)_"
+    return (
+        f"---\n{fm}\n---\n\n"
+        f"# Confirmed brief — {slug}\n\n"
+        f"Family: **{family}**. This file is the confirmed intake (the MDF) — an "
+        f"operator handoff doc and a machine-parseable build input. The render "
+        f"manifest is in `page-meta.yaml`; the page is `{slug}.html`.\n\n"
+        f"## Confirmed inputs\n{body}\n"
+    )
 
 
 def main() -> None:

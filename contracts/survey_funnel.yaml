@@ -230,6 +230,7 @@ output:
   files:
     - "<slug>.html"           # full standalone, opens in browser correctly
     - "page-meta.yaml"        # Scott-style frontmatter manifest
+    - "brief.md"              # MDF: confirmed-brief (YAML front-matter + body) — handoff + build input
     - "chat.md"               # human-readable summary of brief + decisions
     - "assets/"               # any uploaded reference images
   destination: "designs/<YYYY-MM-DD>-<slug>/ in microsite-design-skills Bitbucket repo"

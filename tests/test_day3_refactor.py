@@ -609,10 +609,18 @@ class TestInstructionsUX:
         # forcing inline render + get_preview_url after HTML generation + (f)
         # the inline thumbnail-gallery instruction (show photos in chat before
         # the picker) and the Unsplash-as-second-source wiring (source="both"
-        # + per-provider attribution), the landing brief now lands ~2960 words.
-        # Ceiling bumped to 3000 to keep small headroom.
+        # + per-provider attribution) + (g) the requirement-level completeness
+        # gate (required / conditional / optional) plus the expanded clarifying
+        # field list (page_path, content_copy, reference_layout, integrations,
+        # tracking) on BOTH families + (h) the REQUIRED-INPUTS COMPLETENESS GATE
+        # block (the operator's review-first Rules) and the per-field
+        # [REQUIRED]/[CONDITIONAL] requirement tags, the briefs now land ~3741
+        # (landing) / ~3903 (survey) words. Ceiling bumped to 4100 to keep small
+        # headroom. Note: the long prose `instructions` is now the FALLBACK
+        # runbook — the server-driven state machine + ~318-word INSTRUCTIONS_SHORT
+        # are the real driver, so this budget guards an increasingly secondary path.
         word_count = len(text.split())
-        assert word_count <= 3000, f"[{family}] instructions are {word_count} words; ceiling 3000"
+        assert word_count <= 4100, f"[{family}] instructions are {word_count} words; ceiling 4100"
 
     # ----- Adaptive step-wise intake (Day-3 UX refresh) -----
 
@@ -683,8 +691,9 @@ class TestInstructionsUX:
         assert isinstance(LANDING_PAGE_DEFAULTS, dict)
         assert isinstance(SURVEY_FUNNEL_DEFAULTS, dict)
         # Landing-page dropped `audience` (covered by the site_brief upload);
-        # added `site_brief`, `gtm_tag`, scope-based `page_intent`.
-        for k in ("page_intent", "site_brief", "gtm_tag", "primary_cta", "palette", "benefits", "tone"):
+        # added `site_brief`, scope-based `page_intent`. `gtm_tag` was replaced
+        # by the broader `tracking` field.
+        for k in ("page_intent", "site_brief", "tracking", "primary_cta", "palette", "benefits", "tone"):
             assert k in LANDING_PAGE_DEFAULTS, f"Landing Page defaults missing {k!r}"
         assert "audience" not in LANDING_PAGE_DEFAULTS, (
             "Landing Page defaults should no longer carry `audience` — the brief upload covers it"
@@ -697,8 +706,37 @@ class TestInstructionsUX:
 # submit_design
 # ---------------------------------------------------------------------------
 
+def _complete_intake(design_id: str, user_email: str = DEFAULT_USER) -> None:
+    """Seed a COMPLETE clarifying_state so submit_design's completeness gate
+    passes. These submit tests exercise validation/publish behaviour, not the
+    intake gate (which has its own dedicated tests). Tolerant: no-op when the
+    draft isn't visible to user_email (unknown id / cross-user cases)."""
+    rec = drafts.get(design_id, user_email)
+    if rec is None:
+        return
+    field_list = server_mod._field_list_for(rec.family)
+    collected: dict[str, str] = {}
+    not_required: list[str] = []
+    for cf in field_list:
+        if cf.is_checkpoint:
+            continue
+        if cf.requirement == "required":
+            collected[cf.key] = "x"
+        elif cf.requirement == "conditional":
+            not_required.append(cf.key)
+    drafts.update_clarifying_state(design_id, user_email, {
+        "current_field_index": len(field_list),
+        "collected": collected,
+        "skipped": [],
+        "not_required": not_required,
+        "checkpoint_state": "confirmed",
+    })
+
+
 def _submit(**kwargs):
     """Helper — submit_design is now async; sync-wrap for the legacy tests."""
+    if "design_id" in kwargs:
+        _complete_intake(kwargs["design_id"])
     return asyncio.run(submit_design(**kwargs))
 
 
@@ -717,6 +755,7 @@ class TestSubmitDesign:
     def test_publish_true_returns_submitting_then_publishes(self, temp_design_repo):
         brief_resp = start_landing_page_intake(brief="Test brief for submit")
         design_id = brief_resp["design_id"]
+        _complete_intake(design_id)
         manifest = _valid_manifest()
         html = _valid_html()
 
@@ -743,6 +782,8 @@ class TestSubmitDesign:
         assert Path(record.design_dir).exists()
         assert (Path(record.design_dir) / "test-landing.html").exists()
         assert (Path(record.design_dir) / "page-meta.yaml").exists()
+        # brief.md (the MDF) is written alongside the manifest on publish.
+        assert (Path(record.design_dir) / "brief.md").exists()
         assert record.last_error is None
 
     def test_publish_true_returns_quickly_even_when_publish_blocks(self, temp_design_repo, monkeypatch):
@@ -756,6 +797,7 @@ class TestSubmitDesign:
 
         brief_resp = start_landing_page_intake(brief="async timing check")
         design_id = brief_resp["design_id"]
+        _complete_intake(design_id)
 
         async def go():
             t0 = time.monotonic()
@@ -782,6 +824,7 @@ class TestSubmitDesign:
 
         brief_resp = start_landing_page_intake(brief="failure-path coverage")
         design_id = brief_resp["design_id"]
+        _complete_intake(design_id)
 
         async def go():
             result = await submit_design(
@@ -812,6 +855,7 @@ class TestSubmitDesign:
 
         brief_resp = start_landing_page_intake(brief="truncate check")
         design_id = brief_resp["design_id"]
+        _complete_intake(design_id)
 
         async def go():
             await submit_design(
@@ -843,6 +887,7 @@ class TestSubmitDesign:
 
         brief_resp = start_landing_page_intake(brief="Author check")
         design_id = brief_resp["design_id"]
+        _complete_intake(design_id)
 
         async def go():
             await submit_design(
@@ -944,6 +989,131 @@ class TestSubmitDesign:
         assert record.status == "drafted"
 
 
+class TestSubmitDesignCompletenessGate:
+    """The server hard-gate on submit_design: REJECT unless the clarifying
+    intake is complete (every required field collected, every conditional
+    field resolved). Runs right after the terminal-status check."""
+
+    def test_submit_rejected_when_intake_incomplete(self):
+        design_id = start_landing_page_intake(brief="incomplete gate test")["design_id"]
+        # Deliberately do NOT complete the intake — call submit_design directly
+        # (NOT via _submit, which would auto-complete it).
+        result = asyncio.run(submit_design(
+            design_id=design_id,
+            html=_valid_html(),
+            manifest=_valid_manifest(),
+            publish=False,
+        ))
+        assert result["ok"] is False
+        assert result["intake_complete"] is False
+        assert any("brief incomplete" in e for e in result["errors"])
+        # The gate didn't persist anything — draft stays drafted.
+        assert drafts.get(design_id, DEFAULT_USER).status == "drafted"
+
+    def test_submit_accepted_after_intake_complete(self):
+        design_id = start_landing_page_intake(brief="complete gate test")["design_id"]
+        _complete_intake(design_id)
+        result = asyncio.run(submit_design(
+            design_id=design_id,
+            html=_valid_html(),
+            manifest=_valid_manifest(),
+            publish=False,
+        ))
+        assert result["ok"] is True
+        assert result["status"] == "submitted"
+
+    def test_unresolved_conditional_blocks_submit(self):
+        design_id = start_landing_page_intake(brief="conditional gate test")["design_id"]
+        # Build the same complete state, but leave the conditional
+        # `integrations` field unresolved (not collected, not in not_required).
+        field_list = server_mod._field_list_for("landing-page")
+        collected: dict[str, str] = {}
+        not_required: list[str] = []
+        for cf in field_list:
+            if cf.is_checkpoint:
+                continue
+            if cf.requirement == "required":
+                collected[cf.key] = "x"
+            elif cf.requirement == "conditional" and cf.key != "integrations":
+                not_required.append(cf.key)
+        drafts.update_clarifying_state(design_id, DEFAULT_USER, {
+            "current_field_index": len(field_list),
+            "collected": collected,
+            "skipped": [],
+            "not_required": not_required,
+            "checkpoint_state": "confirmed",
+        })
+        result = asyncio.run(submit_design(
+            design_id=design_id,
+            html=_valid_html(),
+            manifest=_valid_manifest(),
+            publish=False,
+        ))
+        assert result["ok"] is False
+        assert "integrations" in "; ".join(result["errors"])
+
+
+class TestBriefMd:
+    """The brief.md (MDF) deliverable — YAML front-matter + body built from the
+    confirmed clarifying intake."""
+
+    def _seed_state(self, design_id: str, *, integrations: str = "Databowl via API, client HealthBoost") -> None:
+        fl = server_mod._field_list_for("landing-page")
+        collected = {
+            cf.key: f"value-{cf.key}"
+            for cf in fl
+            if not cf.is_checkpoint and cf.requirement == "required"
+        }
+        collected["integrations"] = integrations  # a provided conditional
+        not_required = [
+            cf.key
+            for cf in fl
+            if not cf.is_checkpoint
+            and cf.requirement == "conditional"
+            and cf.key != "integrations"
+        ]
+        drafts.update_clarifying_state(
+            design_id, DEFAULT_USER,
+            {
+                "current_field_index": len(fl),
+                "collected": collected,
+                "skipped": [],
+                "not_required": not_required,
+                "checkpoint_state": "confirmed",
+            },
+        )
+
+    def test_brief_md_has_frontmatter_and_inputs(self):
+        design_id = start_landing_page_intake(brief="HealthBoost brief")["design_id"]
+        self._seed_state(design_id)
+        rec = drafts.get(design_id, DEFAULT_USER)
+        md = server_mod._build_brief_md(rec, "healthboost", _valid_manifest())
+        # YAML front-matter delimiters + machine-parseable keys.
+        assert md.startswith("---\n")
+        assert md.count("---") >= 2
+        assert "slug: healthboost" in md
+        assert "family: landing-page" in md
+        # A provided conditional shows its detail verbatim.
+        assert "Databowl via API" in md
+        # An unprovided conditional (tracking) is recorded as not_required.
+        assert "tracking" in md
+        assert "not_required" in md
+        # Human-readable body.
+        assert "# Confirmed brief — healthboost" in md
+        assert "## Confirmed inputs" in md
+
+    def test_brief_md_marks_not_required_conditionals(self):
+        design_id = start_landing_page_intake(brief="x")["design_id"]
+        self._seed_state(design_id)
+        rec = drafts.get(design_id, DEFAULT_USER)
+        md = server_mod._build_brief_md(rec, "slug-x", _valid_manifest())
+        # reference_layout + tracking were conditional + unprovided → Not required.
+        assert "_Not required_" in md
+        # The front-matter not_required list names them.
+        assert "reference_layout" in md
+        assert "tracking" in md
+
+
 # ---------------------------------------------------------------------------
 # update_design + get_design_status + cancel_design
 # ---------------------------------------------------------------------------
@@ -999,6 +1169,7 @@ class TestIterationTools:
 
         brief_resp = start_landing_page_intake(brief="surface last_error")
         design_id = brief_resp["design_id"]
+        _complete_intake(design_id)
 
         async def go():
             await submit_design(
@@ -1059,6 +1230,7 @@ class TestIterationTools:
     def test_cancel_after_publish_is_rejected(self, temp_design_repo):
         brief_resp = start_landing_page_intake(brief="Cant cancel after publish")
         design_id = brief_resp["design_id"]
+        _complete_intake(design_id)
 
         async def go():
             await submit_design(
@@ -1568,9 +1740,43 @@ class TestSuggestedOptionsRendered:
         assert "plain-text prompt (NOT AskUserQuestion)" in text
 
     def test_survey_funnel_free_form_field_marked_plain_text(self):
-        # `audience` has no suggested_options on survey-funnel either.
+        # `audience` has no suggested_options on survey-funnel either. Survey
+        # now renders the STRICT QUESTION SCRIPT (same as landing), so the
+        # free-form field block is keyed `Field <n> — audience` and steers the
+        # caller to a plain-text prompt instead of AskUserQuestion.
         text = _instructions_for("survey-funnel", "anything")
-        assert "Ask audience as plain text" in text
+        assert "— audience" in text
+        assert "plain-text prompt (NOT AskUserQuestion)" in text
+
+
+class TestCompletenessGateInBrief:
+    """The review-first REQUIRED-INPUTS COMPLETENESS GATE (operator Rules) +
+    per-field requirement tags must render into BOTH families' briefs."""
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_gate_block_present(self, family):
+        text = _instructions_for(family, "anything")
+        assert "REQUIRED-INPUTS COMPLETENESS GATE" in text
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_gate_carries_operator_rules(self, family):
+        text = _instructions_for(family, "anything")
+        assert "Do NOT ask the user to resend everything." in text
+        assert "Only ask for the SPECIFIC missing items." in text
+        assert 'confirm "Not required"' in text
+        assert (
+            "Do NOT generate the final HTML/MDF file until all required or "
+            "applicable items are confirmed." in text
+        )
+        assert "SUMMARISE the confirmed brief" in text
+        # The "be strict — integration / DNQ can break the system" rule.
+        assert "break the system" in text
+
+    @pytest.mark.parametrize("family", ["landing-page", "survey-funnel"])
+    def test_requirement_tags_rendered(self, family):
+        text = _instructions_for(family, "anything")
+        assert "[REQUIRED" in text
+        assert "[CONDITIONAL" in text
 
 
 class TestNewDefaults:
@@ -1586,9 +1792,11 @@ class TestNewDefaults:
         from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
         assert "site_brief" in LANDING_PAGE_DEFAULTS
 
-    def test_landing_page_defaults_include_gtm_tag(self):
+    def test_landing_page_defaults_include_tracking(self):
+        # `gtm_tag` was replaced by the broader `tracking` field.
         from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
-        assert "gtm_tag" in LANDING_PAGE_DEFAULTS
+        assert "tracking" in LANDING_PAGE_DEFAULTS
+        assert "gtm_tag" not in LANDING_PAGE_DEFAULTS
 
     def test_landing_page_defaults_drop_audience(self):
         from design_mcp.generators._brief_template import LANDING_PAGE_DEFAULTS
@@ -1617,43 +1825,46 @@ class TestLandingPageClarifyingFieldsRewrite:
             "Replica of an existing landing page",
         ]
 
-    def test_site_brief_is_at_position_3(self):
+    def test_site_brief_is_at_position_2(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        # 1-indexed position-3 == zero-indexed [2]
-        assert _CLARIFYING_FIELDS[2].key == "site_brief"
+        # 1-indexed position-2 == zero-indexed [1] — site_brief is now front-
+        # loaded right after page_intent for the review-first pass.
+        assert _CLARIFYING_FIELDS[1].key == "site_brief"
         # Free-form upload — no suggested options.
-        assert _CLARIFYING_FIELDS[2].suggested_options is None
-        assert _CLARIFYING_FIELDS[2].is_checkpoint is False
+        assert _CLARIFYING_FIELDS[1].suggested_options is None
+        assert _CLARIFYING_FIELDS[1].is_checkpoint is False
 
-    def test_images_choice_is_at_position_5(self):
-        """images_choice was inserted at position 5 (between primary_cta and
-        review_checkpoint) to drive the server-controlled image-sourcing
-        flow that stops Claude from fabricating Unsplash / Pexels URLs."""
+    def test_images_choice_is_at_position_8(self):
+        """images_choice sits at index 7 (position 8) in the rewritten field
+        list — it drives the server-controlled image-sourcing flow that stops
+        Claude from fabricating Unsplash / Pexels URLs."""
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert _CLARIFYING_FIELDS[4].key == "images_choice"
-        assert _CLARIFYING_FIELDS[4].suggested_options is not None
-        assert list(_CLARIFYING_FIELDS[4].suggested_options) == [
+        assert _CLARIFYING_FIELDS[7].key == "images_choice"
+        assert _CLARIFYING_FIELDS[7].suggested_options is not None
+        assert list(_CLARIFYING_FIELDS[7].suggested_options) == [
             "Yes — I'll paste image URLs in chat now",
             "Yes — search free stock photos (Pexels + Unsplash) for me",
             "No — clean modern look with icons + gradients only",
         ]
-        assert _CLARIFYING_FIELDS[4].is_checkpoint is False
+        assert _CLARIFYING_FIELDS[7].is_checkpoint is False
 
-    def test_review_checkpoint_is_at_position_6_and_flagged_is_checkpoint(self):
-        """review_checkpoint shifted from 5 to 6 when images_choice landed."""
+    def test_review_checkpoint_is_terminal_and_flagged_is_checkpoint(self):
+        """review_checkpoint is now the terminal field at index 15."""
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert _CLARIFYING_FIELDS[5].key == "review_checkpoint"
-        assert _CLARIFYING_FIELDS[5].is_checkpoint is True
+        assert _CLARIFYING_FIELDS[15].key == "review_checkpoint"
+        assert _CLARIFYING_FIELDS[15].is_checkpoint is True
 
-    def test_gtm_tag_is_at_position_10(self):
-        """gtm_tag shifted from 9 to 10 when images_choice landed."""
+    def test_tracking_is_at_position_11(self):
+        """`tracking` replaced `gtm_tag` and sits at index 10 (position 11),
+        as a CONDITIONAL field (provide pixels/scripts or confirm none)."""
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert _CLARIFYING_FIELDS[9].key == "gtm_tag"
+        assert _CLARIFYING_FIELDS[10].key == "tracking"
+        assert _CLARIFYING_FIELDS[10].requirement == "conditional"
 
-    def test_total_field_count_is_twelve(self):
-        """11 → 12 fields after images_choice insertion."""
+    def test_total_field_count_is_sixteen(self):
+        """The rewritten landing intake has 16 clarifying fields."""
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
-        assert len(_CLARIFYING_FIELDS) == 12
+        assert len(_CLARIFYING_FIELDS) == 16
 
     def test_audience_dropped_from_clarifying_fields(self):
         from design_mcp.generators.landing_page import _CLARIFYING_FIELDS
@@ -1792,11 +2003,11 @@ class TestStrictQuestionScript:
         assert "not a question" in block.lower() or "NOT a question" in block
         assert "do NOT use AskUserQuestion" in block or "NOT AskUserQuestion" in block
 
-    def test_strict_script_only_applies_to_landing_page(self):
-        """Survey Funnel must keep the casual intake rendering — the strict
-        script is a Landing Page-only change for now."""
-        text = _instructions_for("survey-funnel", "anything")
-        assert "STRICT QUESTION SCRIPT" not in text
+    def test_strict_script_applies_to_both_families(self):
+        """The strict question script now drives BOTH families — survey funnel
+        adopted the same server-driven intake + strict rendering as landing."""
+        assert "STRICT QUESTION SCRIPT" in _instructions_for("survey-funnel", "anything")
+        assert "STRICT QUESTION SCRIPT" in _instructions_for("landing-page", "anything")
 
 
 # ---------------------------------------------------------------------------
@@ -1818,10 +2029,12 @@ class TestDesignLandingPageServerDrivenIntake:
         result = start_landing_page_intake(brief="anything")
         assert "instructions_short" in result
         text = result["instructions_short"]
-        # ~80 words, give or take. Cap at 200 to guard against accidental bloat.
+        # ~318 words now (the shared directive grew to cover the review-first
+        # flow + requirement-level completeness gate + agent_hint handling).
+        # Cap at 400 to guard against accidental bloat.
         assert isinstance(text, str)
         wc = len(text.split())
-        assert 30 <= wc <= 200, f"instructions_short is {wc} words"
+        assert 30 <= wc <= 400, f"instructions_short is {wc} words"
         # Names the new tool + the verbatim contract.
         assert "submit_clarifying_answer" in text
         assert "VERBATIM" in text or "verbatim" in text
@@ -1859,12 +2072,39 @@ class TestDesignLandingPageServerDrivenIntake:
         assert "submit_clarifying_answer" in result["next_action"]
         assert "page_intent" in result["next_action"]
 
-    def test_survey_funnel_response_omits_next_question(self):
-        """Survey funnel is out of scope for v1 — it still uses prose."""
+    def test_survey_funnel_response_includes_next_question(self):
+        """Survey funnel now drives the SAME server-driven intake as landing —
+        its start response carries the first next_question + instructions_short."""
         from design_mcp.server import start_survey_funnel_intake
         result = start_survey_funnel_intake(brief="anything")
-        assert "next_question" not in result
-        assert "instructions_short" not in result
+        assert "next_question" in result
+        assert result["next_question"]["field_key"] == "vertical"
+        assert "instructions_short" in result
+
+
+# Canonical landing walk for the server-driven intake (16 fields, in order).
+# Required fields carry real answers, conditional fields say "Not required",
+# optional fields carry real values, the terminal checkpoint advances on
+# "looks good". The 15 non-checkpoint entries (everything but the last) are
+# what the checkpoint tests resolve before exercising change / rewind.
+_LANDING_FLOW: list[tuple[str, str]] = [
+    ("page_intent", "New microsite landing page"),
+    ("site_brief", "uploaded paste"),
+    ("reference_layout", "Not required"),
+    ("page_path", "/health"),
+    ("site_name", "HealthBoost"),
+    ("content_copy", "you write it"),
+    ("primary_cta", "Request a quote"),
+    ("images_choice", "No — clean modern look with icons + gradients only"),
+    ("palette", "modern blue"),
+    ("integrations", "Not required"),
+    ("tracking", "Not required"),
+    ("benefits", "fast, accurate, cheap"),
+    ("tone", "Friendly + casual"),
+    ("references_to_avoid", "no competitor styles"),
+    ("optional_sections_content", "no optional sections"),
+    ("review_checkpoint", "looks good"),
+]
 
 
 class TestSubmitClarifyingAnswer:
@@ -1872,6 +2112,12 @@ class TestSubmitClarifyingAnswer:
     # we test the linear state-machine walk from a clean slate.
     def _start(self, brief: str = "") -> str:
         return start_landing_page_intake(brief=brief)["design_id"]
+
+    def _walk_to_checkpoint(self, design_id: str) -> None:
+        """Resolve every field before the terminal review_checkpoint so the
+        next question is the checkpoint itself."""
+        for key, ans in _LANDING_FLOW[:-1]:  # all but review_checkpoint
+            submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
 
     def test_first_answer_records_and_returns_next_question(self):
         design_id = self._start()
@@ -1886,8 +2132,8 @@ class TestSubmitClarifyingAnswer:
         assert result["collected_so_far"] == {
             "page_intent": "New microsite landing page",
         }
-        # Next question is site_name (free-form).
-        assert result["next_question"]["field_key"] == "site_name"
+        # Next question is site_brief (index 1, free-form upload).
+        assert result["next_question"]["field_key"] == "site_brief"
         assert result["next_question"]["options"] is None
         # Persisted to the draft row.
         record = drafts.get(design_id, DEFAULT_USER)
@@ -1937,28 +2183,42 @@ class TestSubmitClarifyingAnswer:
 
     def test_empty_answer_records_skip(self):
         design_id = self._start()
+        # page_intent is REQUIRED now — answer it for real first.
+        submit_clarifying_answer(
+            design_id=design_id,
+            field_key="page_intent",
+            answer="New microsite landing page",
+        )
+        # site_brief (index 1) is OPTIONAL — an empty answer silently skips it.
         result = submit_clarifying_answer(
-            design_id=design_id, field_key="page_intent", answer="",
+            design_id=design_id, field_key="site_brief", answer="",
         )
         assert result["ok"] is True
         record = drafts.get(design_id, DEFAULT_USER)
-        assert "page_intent" in record.clarifying_state["skipped"]
+        assert "site_brief" in record.clarifying_state["skipped"]
 
     def test_full_intake_walk_ends_with_intake_complete(self):
         design_id = self._start()
+        # Canonical landing walk: required fields get real answers, conditional
+        # fields say "Not required", optional fields get real values, terminal
+        # checkpoint advances on "looks good".
         flow = [
             ("page_intent", "New microsite landing page"),
-            ("site_name", "HealthBoost"),
             ("site_brief", "uploaded paste"),
-            ("primary_cta", "Get started"),
+            ("reference_layout", "Not required"),
+            ("page_path", "/health"),
+            ("site_name", "HealthBoost"),
+            ("content_copy", "you write it"),
+            ("primary_cta", "Request a quote"),
             ("images_choice", "No — clean modern look with icons + gradients only"),
-            ("review_checkpoint", "looks good"),
             ("palette", "modern blue"),
+            ("integrations", "Not required"),
+            ("tracking", "Not required"),
             ("benefits", "fast, accurate, cheap"),
             ("tone", "Friendly + casual"),
-            ("gtm_tag", "GTM-XXXXXXX"),
             ("references_to_avoid", "no competitor styles"),
             ("optional_sections_content", "no optional sections"),
+            ("review_checkpoint", "looks good"),
         ]
         last = None
         for key, ans in flow:
@@ -1969,24 +2229,18 @@ class TestSubmitClarifyingAnswer:
         # Last call: intake_complete=True, next_question=None.
         assert last["intake_complete"] is True
         assert last["next_question"] is None
-        # All non-checkpoint answers are in collected_so_far.
+        # Required + optional real answers are in collected_so_far. The
+        # conditional "Not required" fields go to not_required, NOT collected.
         for key, ans in flow:
-            if key == "review_checkpoint":
+            if key in ("review_checkpoint", "reference_layout", "integrations", "tracking"):
                 continue
             assert last["collected_so_far"][key] == ans
         assert "instructions_legacy" in last["next_action"] or "STEP 2" in last["next_action"]
 
     def test_checkpoint_change_path(self):
         design_id = self._start()
-        # Walk to the checkpoint.
-        for key, ans in [
-            ("page_intent", "New microsite landing page"),
-            ("site_name", "HealthBoost"),
-            ("site_brief", "x"),
-            ("primary_cta", "Get started"),
-            ("images_choice", "No — clean modern look with icons + gradients only"),
-        ]:
-            submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
+        # Resolve all 15 prior fields so the terminal checkpoint comes up.
+        self._walk_to_checkpoint(design_id)
         # Sanity: next question is the checkpoint.
         nq = get_next_question(design_id=design_id)
         assert nq["next_question"]["field_key"] == "review_checkpoint"
@@ -2003,14 +2257,8 @@ class TestSubmitClarifyingAnswer:
 
     def test_checkpoint_rewind_path(self):
         design_id = self._start()
-        for key, ans in [
-            ("page_intent", "New microsite landing page"),
-            ("site_name", "HealthBoost"),
-            ("site_brief", "x"),
-            ("primary_cta", "Get started"),
-            ("images_choice", "No — clean modern look with icons + gradients only"),
-        ]:
-            submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
+        # Resolve all 15 prior fields so the terminal checkpoint comes up.
+        self._walk_to_checkpoint(design_id)
         result = submit_clarifying_answer(
             design_id=design_id,
             field_key="review_checkpoint",
@@ -2046,20 +2294,29 @@ class TestGetNextQuestion:
 
     def test_returns_null_when_intake_complete(self):
         design_id = start_landing_page_intake(brief="")["design_id"]
-        # Skip every regular field, advance the checkpoint.
-        for key in [
-            "page_intent", "site_name", "site_brief", "primary_cta",
-            "images_choice",
-        ]:
-            submit_clarifying_answer(design_id=design_id, field_key=key, answer="skip")
-        submit_clarifying_answer(
-            design_id=design_id, field_key="review_checkpoint", answer="continue",
-        )
-        for key in [
-            "palette", "benefits", "tone", "gtm_tag",
-            "references_to_avoid", "optional_sections_content",
-        ]:
-            submit_clarifying_answer(design_id=design_id, field_key=key, answer="skip")
+        # Required fields can't be skipped — give them real answers; conditional
+        # fields confirm "Not required"; optional fields silently skip; then the
+        # terminal checkpoint advances on "continue".
+        walk = [
+            ("page_intent", "New microsite landing page"),
+            ("site_brief", "skip"),
+            ("reference_layout", "Not required"),
+            ("page_path", "/health"),
+            ("site_name", "HealthBoost"),
+            ("content_copy", "you write it"),
+            ("primary_cta", "Request a quote"),
+            ("images_choice", "No — clean modern look with icons + gradients only"),
+            ("palette", "modern blue"),
+            ("integrations", "Not required"),
+            ("tracking", "Not required"),
+            ("benefits", "skip"),
+            ("tone", "skip"),
+            ("references_to_avoid", "skip"),
+            ("optional_sections_content", "skip"),
+            ("review_checkpoint", "continue"),
+        ]
+        for key, ans in walk:
+            submit_clarifying_answer(design_id=design_id, field_key=key, answer=ans)
         result = get_next_question(design_id=design_id)
         assert result["ok"] is True
         assert result["intake_complete"] is True
