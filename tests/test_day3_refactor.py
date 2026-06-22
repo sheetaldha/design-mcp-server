@@ -2029,12 +2029,12 @@ class TestDesignLandingPageServerDrivenIntake:
         result = start_landing_page_intake(brief="anything")
         assert "instructions_short" in result
         text = result["instructions_short"]
-        # ~318 words now (the shared directive grew to cover the review-first
-        # flow + requirement-level completeness gate + agent_hint handling).
-        # Cap at 400 to guard against accidental bloat.
+        # ~405 words now (the shared directive grew to cover the review-first
+        # flow + requirement-level completeness gate + agent_hint handling + the
+        # auto-read-reference-URL directive). Cap at 500 to guard against bloat.
         assert isinstance(text, str)
         wc = len(text.split())
-        assert 30 <= wc <= 400, f"instructions_short is {wc} words"
+        assert 30 <= wc <= 500, f"instructions_short is {wc} words"
         # Names the new tool + the verbatim contract.
         assert "submit_clarifying_answer" in text
         assert "VERBATIM" in text or "verbatim" in text
