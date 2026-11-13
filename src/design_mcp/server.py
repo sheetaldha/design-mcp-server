@@ -23,7 +23,9 @@ Day 5 will switch from stdio to HTTP/SSE for claude.ai web access.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
+from pathlib import Path
 import sys
 import traceback
 from typing import Any, Optional
@@ -1635,6 +1637,215 @@ def search_icons(query: str, count: int = 8) -> dict:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Landing pages (Cloudflare) — copy, layout and style edits for named editors.
+# All guard rules live in landing.py; these wrappers add auth and locking.
+# ---------------------------------------------------------------------------
+
+import fcntl as _fcntl
+from contextlib import contextmanager as _contextmanager
+
+from . import landing as _landing
+
+
+@_contextmanager
+def _landing_session():
+    """Resolve the editor, load config and hold the working-copy lock."""
+    cfg = _landing.LandingConfig.from_env()
+    email = resolve_user_email()
+    _landing.require_editor(cfg, email)
+    lock_path = Path(cfg.local_clone + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_path, "w") as lf:
+        _fcntl.flock(lf, _fcntl.LOCK_EX)
+        try:
+            yield cfg, email, _landing.Workspace(cfg)
+        finally:
+            _fcntl.flock(lf, _fcntl.LOCK_UN)
+
+
+def _landing_error(e: Exception) -> dict:
+    if isinstance(e, (_landing.LandingError, AuthContextError)):
+        return {"ok": False, "error": str(e)}
+    log.exception("landing tool failed")
+    return {"ok": False, "error": f"Unexpected error: {type(e).__name__}. Sheetal has the server log."}
+
+
+def _site_cfg(sites: dict, site: str) -> dict:
+    if site not in sites:
+        raise _landing.LandingError(f"Unknown site '{site}'. Sites: {', '.join(sites)}.")
+    return sites[site]
+
+
+@mcp.tool()
+def landing_list_sites() -> dict:
+    """List the Cloudflare landing pages you can edit, with their live and preview addresses.
+
+    You can change copy, layout and styles (HTML and CSS) and add images. You
+    cannot change scripts, the lead form's workings, the consent wording or
+    anything on the backend. Every change gets a test-mode preview and automatic
+    checks, and goes live only after Sheetal approves it.
+    """
+    try:
+        with _landing_session() as (cfg, email, ws):
+            sites = ws.sites()
+            return {"ok": True, "sites": [
+                {"site": k, "live_url": f"https://{v['liveHost']}/comparenow",
+                 "your_preview_url": _landing.preview_url(v, _landing.branch_for(email, k)),
+                 "editable_files": list(_landing.TEXT_EDITABLE), "images_folder": _landing.IMAGE_DIR}
+                for k, v in sites.items()]}
+    except Exception as e:  # noqa: BLE001
+        return _landing_error(e)
+
+
+@mcp.tool()
+def landing_read_file(site: str, path: str) -> dict:
+    """Read an editable file from your working copy of a landing site.
+
+    Args:
+        site: e.g. "mlic-v2" (see landing_list_sites).
+        path: one of the editable files, e.g. "public/index.html" or "public/assets/app.css".
+    Returns the current content on your branch (or the live version if you have no changes).
+    """
+    try:
+        rel = _landing.validate_path(path)
+        with _landing_session() as (cfg, email, ws):
+            _site_cfg(ws.sites(), site)
+            ws.checkout(_landing.branch_for(email, site))
+            return {"ok": True, "site": site, "path": rel, "content": ws.read(f"{site}/{rel}")}
+    except Exception as e:  # noqa: BLE001
+        return _landing_error(e)
+
+
+@mcp.tool()
+def landing_save_file(site: str, path: str, content: str, summary: str) -> dict:
+    """Save a change to an editable HTML or CSS file. Creates a preview and starts the checks.
+
+    Always read the file first (landing_read_file) and send the complete new
+    content. Scripts, form fields, element ids and the consent wording must stay
+    exactly as they are; the save is refused otherwise.
+
+    Args:
+        site: e.g. "mlic-v2".
+        path: an editable file, e.g. "public/index.html".
+        content: the full new file content.
+        summary: one line describing the change, e.g. "Shorter headline".
+    Returns the preview URL. Checks take about 3 minutes: use landing_status.
+    """
+    try:
+        rel = _landing.validate_path(path)
+        if len(content.encode("utf-8")) > _landing.MAX_TEXT_BYTES:
+            raise _landing.LandingError("That file is too large (400 KB limit).")
+        if not summary.strip():
+            raise _landing.LandingError("Add a one-line summary of the change.")
+        with _landing_session() as (cfg, email, ws):
+            sc = _site_cfg(ws.sites(), site)
+            branch = _landing.branch_for(email, site)
+            ws.checkout(branch)
+            old = ws.read(f"{site}/{rel}")
+            problems = _landing.check_html_change(old, content) if rel.endswith(".html") else _landing.check_css_change(content)
+            if problems:
+                return {"ok": False, "refused": True, "problems": problems}
+            sha = ws.commit_and_push(branch, {f"{site}/{rel}": content.encode("utf-8")},
+                                     f"{site}: {summary.strip()[:120]}", email)
+            return {"ok": True, "site": site, "branch": branch, "commit": sha[:12],
+                    "preview_url": _landing.preview_url(sc, branch),
+                    "next": "Checks and preview take about 3 minutes. Call landing_status to see the result."}
+    except Exception as e:  # noqa: BLE001
+        return _landing_error(e)
+
+
+@mcp.tool()
+def landing_add_image(site: str, filename: str, image_base64: str, summary: str) -> dict:
+    """Add or replace an image for a landing site (png, jpg, webp or svg, up to 2 MB).
+
+    The image is stored at public/assets/img/<filename>; reference it in HTML or
+    CSS as /assets/img/<filename>.
+    """
+    try:
+        try:
+            data = base64.b64decode(image_base64, validate=True)
+        except Exception:
+            raise _landing.LandingError("image_base64 isn't valid base64.")
+        name = filename.strip().lower()
+        problems = _landing.check_image(name, data)
+        if problems:
+            return {"ok": False, "refused": True, "problems": problems}
+        with _landing_session() as (cfg, email, ws):
+            sc = _site_cfg(ws.sites(), site)
+            branch = _landing.branch_for(email, site)
+            ws.checkout(branch)
+            sha = ws.commit_and_push(branch, {f"{site}/{_landing.IMAGE_DIR}{name}": data},
+                                     f"{site}: {summary.strip()[:120] or 'add image ' + name}", email)
+            return {"ok": True, "path": f"/assets/img/{name}", "commit": sha[:12],
+                    "preview_url": _landing.preview_url(sc, branch)}
+    except Exception as e:  # noqa: BLE001
+        return _landing_error(e)
+
+
+@mcp.tool()
+def landing_status(site: str) -> dict:
+    """Show your pending changes for a site, the preview link and the result of the automatic checks."""
+    try:
+        with _landing_session() as (cfg, email, ws):
+            sc = _site_cfg(ws.sites(), site)
+            branch = _landing.branch_for(email, site)
+            ws.checkout(branch)
+            head = ws.run(["git", "rev-parse", "HEAD"], ws.root)
+            changed = ws.changed_files(branch) if head else []
+            bb = _landing.Bitbucket(cfg)
+            p = bb.latest_pipeline(branch)
+            summ = _landing.pipeline_summary(p, head)
+            out = {"ok": True, "site": site, "branch": branch, "changed_files": changed,
+                   "preview_url": _landing.preview_url(sc, branch), "checks": summ}
+            if summ.get("state") == "COMPLETED" and summ.get("uuid"):
+                out["checks_detail"] = bb.pipeline_log_tail(summ["uuid"])
+            if not changed:
+                out["note"] = "No pending changes: your branch matches the live site."
+            elif summ.get("passed") and summ.get("for_latest_change"):
+                out["next"] = "Checks passed. Use landing_request_publish to ask Sheetal to put it live."
+            return out
+    except Exception as e:  # noqa: BLE001
+        return _landing_error(e)
+
+
+@mcp.tool()
+def landing_request_publish(site: str, summary: str) -> dict:
+    """Ask for your changes to go live. Only works when the checks passed on your latest change.
+
+    Opens a pull request for Sheetal to approve. Once she merges it, the site is
+    deployed and the checks run again against the live page.
+    """
+    try:
+        with _landing_session() as (cfg, email, ws):
+            sc = _site_cfg(ws.sites(), site)
+            branch = _landing.branch_for(email, site)
+            ws.checkout(branch)
+            head = ws.run(["git", "rev-parse", "HEAD"], ws.root)
+            changed = ws.changed_files(branch)
+            if not changed:
+                raise _landing.LandingError("There's nothing to publish: no changes on your branch.")
+            outside = [f for f in changed if not (f.startswith(f"{site}/") and (f[len(site) + 1:] in _landing.TEXT_EDITABLE or f[len(site) + 1:].startswith(_landing.IMAGE_DIR)))]
+            if outside:
+                raise _landing.LandingError(f"Your branch changes files outside the editable set ({', '.join(outside)}). Ask Sheetal.")
+            bb = _landing.Bitbucket(cfg)
+            summ = _landing.pipeline_summary(bb.latest_pipeline(branch), head)
+            if not summ.get("for_latest_change"):
+                raise _landing.LandingError("The checks haven't run on your latest change yet. Wait for landing_status to show them.")
+            if summ.get("state") != "COMPLETED":
+                raise _landing.LandingError("The checks are still running. Try again in a minute.")
+            if not summ.get("passed"):
+                raise _landing.LandingError("The checks failed on your latest change, so it can't be published. See landing_status for what failed.")
+            desc = (f"Requested by {email} via the landing MCP.\n\n**Change:** {summary.strip()}\n\n"
+                    f"**Files:** {', '.join(changed)}\n\n**Preview (test mode):** {_landing.preview_url(sc, branch)}\n\n"
+                    f"**Release checks:** passed on build #{summ.get('build_number')} for commit {head[:12]}.\n\n"
+                    f"Merging deploys {site} to production and re-runs the checks against the live page.")
+            url = bb.open_pr(branch, f"{site}: {summary.strip()[:90]}", desc)
+            return {"ok": True, "pull_request": url, "next": f"Sent to {cfg.owner_email} for approval."}
+    except Exception as e:  # noqa: BLE001
+        return _landing_error(e)
+
 
 def _build_chat_summary(brief: str, slug: str, family: str, manifest_dict: dict) -> str:
     parts = [
