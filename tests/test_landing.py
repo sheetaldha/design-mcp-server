@@ -32,7 +32,6 @@ def test_copy_change_is_allowed():
     (lambda h: h.replace("</main>", "<form action='https://x'></form></main>"), "form"),
     (lambda h: h.replace("</main>", "<input name='x'></main>"), "input"),
     (lambda h: h.replace("</main>", '<a href="javascript:steal()">x</a></main>'), "javascript"),
-    (lambda h: h.replace("consent to being contacted", "agree to be contacted"), "consent"),
 ])
 def test_unsafe_html_is_refused(mutate, expect):
     new = mutate(INDEX)
@@ -214,3 +213,26 @@ def test_non_editor_is_refused(remote, monkeypatch):
     monkeypatch.setattr(S, "resolve_user_email", lambda: "hayden@acquirely.com.au")
     r = S.landing_list_sites()
     assert not r["ok"] and "not set up" in r["error"]
+
+
+def test_consent_wording_is_editable_now():
+    new = INDEX.replace("consent to being contacted", "agree to be contacted")
+    assert L.check_html_change(INDEX, new) == []
+
+
+@pytest.mark.parametrize("content, ok", [
+    ('{"gtmId": "GTM-KXJFBDD", "metaPixelId": "", "googleTagIds": []}', True),
+    ('{"gtmId": "GTM-ABC1234", "metaPixelId": "779295220285622", "googleTagIds": ["G-ABCD1234", "AW-123456789"]}', True),
+    ('{"gtmId": "GTM-KXJFBDD\"><script>", "googleTagIds": []}', False),
+    ('{"gtmId": "GTM-KXJFBDD", "metaPixelId": "abc"}', False),
+    ('{"gtmId": "GTM-KXJFBDD", "script": "alert(1)"}', False),
+    ('{"gtmId": "", "metaPixelId": "", "googleTagIds": []}', False),
+    ('not json', False),
+])
+def test_tracking_validation(content, ok):
+    assert (L.check_tracking(content) == []) is ok
+
+
+def test_new_editable_files():
+    for p in ("public/assets/footer.html", "public/terms/index.html", "public/privacy/index.html", "public/tracking.json"):
+        assert L.validate_path(p) == p

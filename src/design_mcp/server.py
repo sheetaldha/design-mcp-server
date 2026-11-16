@@ -1682,9 +1682,10 @@ def _site_cfg(sites: dict, site: str) -> dict:
 def landing_list_sites() -> dict:
     """List the Cloudflare landing pages you can edit, with their live and preview addresses.
 
-    You can change copy, layout and styles (HTML and CSS) and add images. You
-    cannot change scripts, the lead form's workings, the consent wording or
-    anything on the backend. Every change gets a test-mode preview and automatic
+    You can change copy, layout and styles, the consent and compliance wording,
+    the footer, the Terms and Privacy pages, tracking IDs (public/tracking.json:
+    GTM container, Meta pixel, Google tags) and images. You cannot change the
+    questions, the lead form's workings, scripts or anything on the backend. Every change gets a test-mode preview and automatic
     checks, and goes live only after Sheetal approves it.
     """
     try:
@@ -1723,8 +1724,9 @@ def landing_save_file(site: str, path: str, content: str, summary: str) -> dict:
     """Save a change to an editable HTML or CSS file. Creates a preview and starts the checks.
 
     Always read the file first (landing_read_file) and send the complete new
-    content. Scripts, form fields, element ids and the consent wording must stay
-    exactly as they are; the save is refused otherwise.
+    content. Scripts, form fields and element ids must stay exactly as they are;
+    the save is refused otherwise. Wording (including consent, footer, Terms and
+    Privacy) is editable. public/tracking.json takes tracking IDs only.
 
     Args:
         site: e.g. "mlic-v2".
@@ -1744,7 +1746,12 @@ def landing_save_file(site: str, path: str, content: str, summary: str) -> dict:
             branch = _landing.branch_for(email, site)
             ws.checkout(branch)
             old = ws.read(f"{site}/{rel}")
-            problems = _landing.check_html_change(old, content) if rel.endswith(".html") else _landing.check_css_change(content)
+            if rel.endswith(".html"):
+                problems = _landing.check_html_change(old, content)
+            elif rel.endswith(".json"):
+                problems = _landing.check_tracking(content)
+            else:
+                problems = _landing.check_css_change(content)
             if problems:
                 return {"ok": False, "refused": True, "problems": problems}
             sha = ws.commit_and_push(branch, {f"{site}/{rel}": content.encode("utf-8")},

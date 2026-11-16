@@ -39,8 +39,12 @@ TEXT_EDITABLE = (
     "public/index.html",
     "public/thank-you/index.html",
     "public/dnq/index.html",
+    "public/terms/index.html",
+    "public/privacy/index.html",
+    "public/assets/footer.html",
     "public/assets/app.css",
     "public/assets/b.css",
+    "public/tracking.json",
 )
 IMAGE_DIR = "public/assets/img/"
 IMAGE_TYPES = {".png": b"\x89PNG", ".jpg": b"\xff\xd8\xff", ".jpeg": b"\xff\xd8\xff", ".webp": b"RIFF", ".svg": b"<"}
@@ -172,8 +176,7 @@ def check_html_change(old: str, new: str) -> list[str]:
     for tag in ("iframe", "object", "embed", "form", "input", "select", "textarea", "button", "base", "meta"):
         if n.tags.get(tag, 0) > o.tags.get(tag, 0):
             problems.append(f"Adding <{tag}> elements isn't allowed; form and page plumbing is fixed.")
-    if " ".join("".join(o.consent).split()) != " ".join("".join(n.consent).split()):
-        problems.append("The consent wording under the submit button is compliance text and can't be changed here. Ask Sheetal.")
+    # Consent and compliance wording are editable by design (Sheetal, 16 Nov 2026).
     return problems
 
 
@@ -184,6 +187,33 @@ def check_css_change(css: str) -> list[str]:
             problems.append(f"@import is only allowed for Google Fonts ({m.group(1)}).")
     if re.search(r"url\(\s*['\"]?\s*javascript:", css, re.I) or re.search(r"expression\s*\(", css, re.I):
         problems.append("Script inside CSS isn't allowed.")
+    return problems
+
+
+TRACKING_KEYS = {"_help", "gtmId", "metaPixelId", "googleTagIds"}
+
+
+def check_tracking(content: str) -> list[str]:
+    """tracking.json may only hold tracking IDs in their known formats."""
+    try:
+        t = json.loads(content)
+    except ValueError as e:
+        return [f"tracking.json isn't valid JSON ({e})."]
+    if not isinstance(t, dict):
+        return ["tracking.json must be an object like {\"gtmId\": \"GTM-XXXXXXX\"}."]
+    problems = []
+    extra = sorted(set(t) - TRACKING_KEYS)
+    if extra:
+        problems.append(f"Unknown keys in tracking.json: {', '.join(extra)}. Allowed: gtmId, metaPixelId, googleTagIds.")
+    if t.get("gtmId") and not re.fullmatch(r"GTM-[A-Z0-9]{4,12}", str(t["gtmId"])):
+        problems.append("gtmId must look like GTM-XXXXXXX.")
+    if t.get("metaPixelId") and not re.fullmatch(r"[0-9]{6,20}", str(t["metaPixelId"])):
+        problems.append("metaPixelId must be the pixel's number (digits only).")
+    ids = t.get("googleTagIds", [])
+    if not isinstance(ids, list) or any(not re.fullmatch(r"(G|AW|GT|DC)-[A-Z0-9]{4,16}", str(i)) for i in ids) or len(ids) > 5:
+        problems.append("googleTagIds must be a list of up to 5 IDs like G-XXXXXXX or AW-XXXXXXXXX.")
+    if not t.get("gtmId") and not t.get("metaPixelId") and not ids:
+        problems.append("That would remove all tracking. Keep at least the GTM container.")
     return problems
 
 
