@@ -298,7 +298,9 @@ class Bitbucket:
         steps = r.json().get("values", [])
         if not steps:
             return ""
-        lr = self.s.get(f"{self.base}/pipelines/{pipeline_uuid}/steps/{steps[0]['uuid']}/log", headers=self.h, timeout=30)
+        # The log is plain text; asking for JSON gets HTTP 406.
+        lr = self.s.get(f"{self.base}/pipelines/{pipeline_uuid}/steps/{steps[0]['uuid']}/log",
+                        headers={**self.h, "Accept": "text/plain, */*"}, timeout=30)
         if lr.status_code != 200:
             return ""
         keep = [l for l in lr.text.splitlines() if l.startswith(("PASS", "FAIL", "=== checks", "ERROR"))]
