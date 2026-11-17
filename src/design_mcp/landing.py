@@ -65,6 +65,8 @@ class LandingConfig:
     repo_slug: str
     editors: tuple[str, ...]
     owner_email: str
+    autopublish: tuple[str, ...] = ()   # editors whose checked changes go live without Sheetal's approval
+    slack_webhook: str = ""
 
     @classmethod
     def from_env(cls) -> "LandingConfig":
@@ -81,7 +83,12 @@ class LandingConfig:
             repo_slug=slug,
             editors=tuple(e.strip().lower() for e in os.getenv("LANDING_EDITORS", "").split(",") if e.strip()),
             owner_email=os.getenv("LANDING_OWNER_EMAIL", "sheetal@acquirely.com.au"),
+            autopublish=tuple(e.strip().lower() for e in os.getenv("LANDING_AUTOPUBLISH", "").split(",") if e.strip()),
+            slack_webhook=os.getenv("LANDING_SLACK_WEBHOOK", ""),
         )
+
+    def can_autopublish(self, user_email: str) -> bool:
+        return (user_email or "").lower() in self.autopublish
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +306,25 @@ class Workspace:
         self.run(["git", "push", "-q", "origin", f"HEAD:refs/heads/{branch}"], self.root)
         return self.run(["git", "rev-parse", "HEAD"], self.root)
 
+    def is_up_to_date(self, branch: str) -> bool:
+        """True when the editor's branch already contains everything on main."""
+        behind = self.run(["git", "rev-list", "--count", f"origin/{branch}..origin/main"], self.root)
+        return behind.strip() in ("", "0")
+
+    def update_from_main(self, branch: str, user_email: str) -> str:
+        """Merge the latest main into the editor's branch and push it (the checks then rerun)."""
+        self.checkout(branch)
+        name = user_email.split("@")[0].replace(".", " ").title()
+        try:
+            self.run(["git", "-c", f"user.name={name}", "-c", f"user.email={user_email}",
+                      "merge", "-q", "--no-edit", "origin/main"], self.root)
+        except Exception as e:  # noqa: BLE001
+            self.run(["git", "merge", "--abort"], self.root)
+            raise LandingError("Someone else changed the same part of this page since you started, so your draft "
+                               "can't be updated automatically. Ask Sheetal to combine the two.") from e
+        self.run(["git", "push", "-q", "origin", f"HEAD:refs/heads/{branch}"], self.root)
+        return self.run(["git", "rev-parse", "HEAD"], self.root)
+
     def changed_files(self, branch: str) -> list[str]:
         out = self.run(["git", "diff", "--name-only", f"origin/main...origin/{branch}"], self.root)
         return [l for l in out.splitlines() if l]
@@ -336,20 +362,46 @@ class Bitbucket:
         keep = [l for l in lr.text.splitlines() if l.startswith(("PASS", "FAIL", "=== checks", "ERROR"))]
         return "\n".join(keep[-lines:])
 
-    def open_pr(self, branch: str, title: str, description: str) -> str:
+    def open_pr(self, branch: str, title: str, description: str) -> dict:
+        """Open (or reuse) the pull request for this branch. Returns {"id", "url"}."""
         existing = self.s.get(f"{self.base}/pullrequests", headers=self.h, timeout=20,
                               params={"q": f'source.branch.name="{branch}" AND state="OPEN"'})
         existing.raise_for_status()
         vals = existing.json().get("values", [])
         if vals:
-            return vals[0]["links"]["html"]["href"]
+            return {"id": vals[0]["id"], "url": vals[0]["links"]["html"]["href"]}
         r = self.s.post(f"{self.base}/pullrequests", headers=self.h, timeout=20, json={
             "title": title, "description": description,
             "source": {"branch": {"name": branch}}, "destination": {"branch": {"name": "main"}},
             "close_source_branch": True,
         })
         r.raise_for_status()
-        return r.json()["links"]["html"]["href"]
+        j = r.json()
+        return {"id": j["id"], "url": j["links"]["html"]["href"]}
+
+    def merge_pr(self, pr_id: int, message: str) -> tuple[bool, str]:
+        """Squash-merge a pull request into main. Returns (merged, reason if not)."""
+        r = self.s.post(f"{self.base}/pullrequests/{pr_id}/merge", headers=self.h, timeout=60, json={
+            "type": "pullrequest_merge_parameters", "message": message,
+            "merge_strategy": "squash", "close_source_branch": True,
+        })
+        if r.status_code in (200, 202):
+            return True, ""
+        try:
+            reason = (r.json().get("error") or {}).get("message", "")
+        except ValueError:
+            reason = r.text[:200]
+        return False, f"HTTP {r.status_code}: {reason}"
+
+
+def notify_slack(cfg: "LandingConfig", text: str, session: Optional[requests.Session] = None) -> None:
+    """Best effort: a failed notification never blocks a publish."""
+    if not cfg.slack_webhook:
+        return
+    try:
+        (session or requests).post(cfg.slack_webhook, json={"text": text}, timeout=10)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def pipeline_summary(p: Optional[dict], head_sha: Optional[str]) -> dict:

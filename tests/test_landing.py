@@ -157,13 +157,13 @@ class _Session:
         if url.endswith("/pullrequests"): return _Resp({"values": []})
         return _Resp({"values": []})
     def post(self, url, **kw):
-        self.posted = kw["json"]; return _Resp({"links": {"html": {"href": "https://bitbucket.org/pr/1"}}})
+        self.posted = kw["json"]; return _Resp({"id": 1, "links": {"html": {"href": "https://bitbucket.org/pr/1"}}})
 
 
 def test_pr_targets_main_from_editor_branch():
     cfg = L.LandingConfig("u", "/tmp/x", "tok", "acquirelydev", "cf-landing-sites", (), "o")
     s = _Session()
-    url = L.Bitbucket(cfg, s).open_pr("feature-edit-jeremy-mlic-v2", "t", "d")
+    url = L.Bitbucket(cfg, s).open_pr("feature-edit-jeremy-mlic-v2", "t", "d")["url"]
     assert url.endswith("/pr/1")
     assert s.posted["destination"]["branch"]["name"] == "main"
     assert s.posted["source"]["branch"]["name"] == "feature-edit-jeremy-mlic-v2"
@@ -177,7 +177,7 @@ def test_publish_tool_refuses_until_checks_pass(remote, monkeypatch):
     state = {"p": None}
     monkeypatch.setattr(S._landing.Bitbucket, "latest_pipeline", lambda self, b: state["p"])
     monkeypatch.setattr(S._landing.Bitbucket, "pipeline_log_tail", lambda self, u: "PASS x")
-    monkeypatch.setattr(S._landing.Bitbucket, "open_pr", lambda self, b, t, d: "https://bitbucket.org/pr/9")
+    monkeypatch.setattr(S._landing.Bitbucket, "open_pr", lambda self, b, t, d: {"id": 9, "url": "https://bitbucket.org/pr/9"})
 
     # nothing changed yet
     assert not S.landing_request_publish("mlic-v2", "x")["ok"]
@@ -236,3 +236,72 @@ def test_tracking_validation(content, ok):
 def test_new_editable_files():
     for p in ("public/assets/footer.html", "public/terms/index.html", "public/privacy/index.html", "public/tracking.json"):
         assert L.validate_path(p) == p
+
+
+# --------------------------------------------------------------------------- self-publish
+
+def _publish_setup(remote, monkeypatch, autopublish, main_state="SUCCESSFUL"):
+    import dataclasses
+    cfg, bare = remote
+    cfg = dataclasses.replace(cfg, autopublish=autopublish, slack_webhook="https://hooks.example/x")
+    from design_mcp import server as S
+    monkeypatch.setattr(S._landing.LandingConfig, "from_env", classmethod(lambda c: cfg))
+    monkeypatch.setattr(S, "resolve_user_email", lambda: "jeremy@acquirely.com.au")
+    calls = {"merged": [], "slack": []}
+    monkeypatch.setattr(S._landing.Bitbucket, "open_pr", lambda self, b, t, d: {"id": 9, "url": "https://bitbucket.org/pr/9"})
+    monkeypatch.setattr(S._landing.Bitbucket, "merge_pr", lambda self, i, m: (calls["merged"].append(i) or (True, "")))
+    monkeypatch.setattr(S._landing, "notify_slack", lambda c, t, session=None: calls["slack"].append(t))
+    ok = S.landing_save_file("mlic-v2", "public/index.html", INDEX.replace("in 2 minutes", "in 60 seconds"), "Headline")
+    assert ok["ok"], ok
+    head = _sh("git", "--git-dir", str(bare), "rev-parse", "feature-edit-jeremy-mlic-v2")
+    branch_p = {"state": {"name": "COMPLETED", "result": {"name": "SUCCESSFUL"}}, "target": {"commit": {"hash": head}}, "build_number": 3}
+    main_p = {"state": {"name": "COMPLETED" if main_state != "IN_PROGRESS" else "IN_PROGRESS",
+                        "result": {"name": main_state} if main_state != "IN_PROGRESS" else None}, "target": {"commit": {"hash": "f" * 40}}}
+    monkeypatch.setattr(S._landing.Bitbucket, "latest_pipeline", lambda self, b: main_p if b == "main" else branch_p)
+    return S, calls, bare
+
+
+def test_autopublish_editor_goes_live_and_slack_is_told(remote, monkeypatch):
+    S, calls, _ = _publish_setup(remote, monkeypatch, ("jeremy@acquirely.com.au",))
+    r = S.landing_request_publish("mlic-v2", "Shorter headline")
+    assert r["ok"] and r["published"] and calls["merged"] == [9]
+    assert calls["slack"] and "published" in calls["slack"][0] and "Shorter headline" in calls["slack"][0]
+
+
+def test_editor_without_autopublish_still_needs_approval(remote, monkeypatch):
+    S, calls, _ = _publish_setup(remote, monkeypatch, ())
+    r = S.landing_request_publish("mlic-v2", "x")
+    assert r["ok"] and not r["published"] and calls["merged"] == [] and "approval" in r["next"]
+
+
+def test_publishing_paused_after_a_failed_live_release(remote, monkeypatch):
+    S, calls, _ = _publish_setup(remote, monkeypatch, ("jeremy@acquirely.com.au",), main_state="FAILED")
+    r = S.landing_request_publish("mlic-v2", "x")
+    assert not r["ok"] and "paused" in r["error"] and calls["merged"] == []
+
+
+def test_one_release_at_a_time(remote, monkeypatch):
+    S, calls, _ = _publish_setup(remote, monkeypatch, ("jeremy@acquirely.com.au",), main_state="IN_PROGRESS")
+    r = S.landing_request_publish("mlic-v2", "x")
+    assert not r["ok"] and "going live right now" in r["error"] and calls["merged"] == []
+
+
+def test_stale_draft_is_brought_up_to_date_before_publishing(remote, monkeypatch, tmp_path):
+    S, calls, bare = _publish_setup(remote, monkeypatch, ("jeremy@acquirely.com.au",))
+    # someone else's change lands on main (a different file)
+    other = tmp_path / "other"
+    _sh("git", "clone", "-q", str(bare), str(other))
+    (other / "mlic-v2/public/assets/app.css").write_text("/* other change */\n" + (other / "mlic-v2/public/assets/app.css").read_text())
+    _sh("git", "-c", "user.name=o", "-c", "user.email=o@o", "commit", "-qam", "other", cwd=other)
+    _sh("git", "push", "-q", "origin", "HEAD:main", cwd=other)
+    r = S.landing_request_publish("mlic-v2", "x")
+    assert not r["ok"] and r.get("updated_draft") and calls["merged"] == []
+    # branch now contains main
+    assert _sh("git", "--git-dir", str(bare), "rev-list", "--count", "feature-edit-jeremy-mlic-v2..main") == "0"
+
+
+def test_merge_refused_falls_back_to_approval(remote, monkeypatch):
+    S, calls, _ = _publish_setup(remote, monkeypatch, ("jeremy@acquirely.com.au",))
+    monkeypatch.setattr(S._landing.Bitbucket, "merge_pr", lambda self, i, m: (False, "HTTP 403: branch restricted"))
+    r = S.landing_request_publish("mlic-v2", "x")
+    assert r["ok"] and not r["published"] and "approve" in r["next"] and "403" in calls["slack"][0]

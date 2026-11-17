@@ -1808,10 +1808,16 @@ def landing_status(site: str) -> dict:
                    "preview_url": _landing.preview_url(sc, branch), "checks": summ}
             if summ.get("state") == "COMPLETED" and summ.get("uuid"):
                 out["checks_detail"] = bb.pipeline_log_tail(summ["uuid"])
+            live = _landing.pipeline_summary(bb.latest_pipeline("main"), None)
+            out["live_site"] = {"last_publish_build": live.get("build_number"), "state": live.get("state"),
+                                "passed": live.get("passed")}
+            if live.get("state") == "COMPLETED" and not live.get("passed"):
+                out["live_site"]["note"] = "The last publish failed its live checks and the site was rolled back. Sheetal has been alerted."
             if not changed:
                 out["note"] = "No pending changes: your branch matches the live site."
             elif summ.get("passed") and summ.get("for_latest_change"):
-                out["next"] = "Checks passed. Use landing_request_publish to ask Sheetal to put it live."
+                out["next"] = ("Checks passed. Use landing_request_publish to put it live." if cfg.can_autopublish(email)
+                               else "Checks passed. Use landing_request_publish to ask Sheetal to put it live.")
             return out
     except Exception as e:  # noqa: BLE001
         return _landing_error(e)
@@ -1819,10 +1825,12 @@ def landing_status(site: str) -> dict:
 
 @mcp.tool()
 def landing_request_publish(site: str, summary: str) -> dict:
-    """Ask for your changes to go live. Only works when the checks passed on your latest change.
+    """Put your changes live. Only works when the checks passed on your latest change.
 
-    Opens a pull request for Sheetal to approve. Once she merges it, the site is
-    deployed and the checks run again against the live page.
+    For editors allowed to self-publish, the change is merged and deployed straight
+    away; the checks run again on the live page and the site rolls back by itself
+    if they fail. Everyone else gets a pull request for Sheetal to approve.
+    summary: one line on what changed (it goes in the publish log and Slack).
     """
     try:
         with _landing_session() as (cfg, email, ws):
@@ -1837,6 +1845,12 @@ def landing_request_publish(site: str, summary: str) -> dict:
             if outside:
                 raise _landing.LandingError(f"Your branch changes files outside the editable set ({', '.join(outside)}). Ask Sheetal.")
             bb = _landing.Bitbucket(cfg)
+            # The live site moved on since this draft started: bring it up to date and recheck first.
+            if not ws.is_up_to_date(branch):
+                ws.update_from_main(branch, email)
+                return {"ok": False, "updated_draft": True,
+                        "message": "The live site changed since you started, so I've brought your draft up to date. "
+                                   "The checks are running again on it (about 5 minutes). Publish again once landing_status shows they passed."}
             summ = _landing.pipeline_summary(bb.latest_pipeline(branch), head)
             if not summ.get("for_latest_change"):
                 raise _landing.LandingError("The checks haven't run on your latest change yet. Wait for landing_status to show them.")
@@ -1844,12 +1858,34 @@ def landing_request_publish(site: str, summary: str) -> dict:
                 raise _landing.LandingError("The checks are still running. Try again in a minute.")
             if not summ.get("passed"):
                 raise _landing.LandingError("The checks failed on your latest change, so it can't be published. See landing_status for what failed.")
+            live = _landing.pipeline_summary(bb.latest_pipeline("main"), None)
+            if live.get("state") in ("PENDING", "IN_PROGRESS"):
+                raise _landing.LandingError("Another change is going live right now. Try again in about 5 minutes.")
+            if live.get("state") == "COMPLETED" and not live.get("passed"):
+                raise _landing.LandingError("The last change to go live failed its checks and was rolled back. "
+                                            "Publishing is paused until Sheetal has looked at it.")
             desc = (f"Requested by {email} via the landing MCP.\n\n**Change:** {summary.strip()}\n\n"
                     f"**Files:** {', '.join(changed)}\n\n**Preview (test mode):** {_landing.preview_url(sc, branch)}\n\n"
                     f"**Release checks:** passed on build #{summ.get('build_number')} for commit {head[:12]}.\n\n"
                     f"Merging deploys {site} to production and re-runs the checks against the live page.")
-            url = bb.open_pr(branch, f"{site}: {summary.strip()[:90]}", desc)
-            return {"ok": True, "pull_request": url, "next": f"Sent to {cfg.owner_email} for approval."}
+            title = f"{site}: {summary.strip()[:90]}"
+            pr = bb.open_pr(branch, title, desc)
+            who = email.split("@")[0].title()
+            if cfg.can_autopublish(email):
+                merged, why = bb.merge_pr(pr["id"], f"{title}\n\nPublished by {email} via the landing MCP. Files: {', '.join(changed)}")
+                if merged:
+                    _landing.notify_slack(cfg, f":rocket: *{who}* published *{site}*: {summary.strip()}\n"
+                                               f"Files: {', '.join(changed)}\nChange: {pr['url']}\n"
+                                               f"Live in about 5 minutes; the checks rerun on the live page and it rolls back by itself if they fail.")
+                    return {"ok": True, "published": True, "pull_request": pr["url"],
+                            "next": "Going live now. It takes about 5 minutes, then the checks run on the live page. "
+                                    "Ask for landing_status in 5 minutes to confirm it's live."}
+                _landing.notify_slack(cfg, f":warning: {who}'s publish of *{site}* couldn't be merged automatically ({why}). "
+                                           f"It's waiting for approval: {pr['url']}")
+                return {"ok": True, "published": False, "pull_request": pr["url"],
+                        "next": f"It couldn't go live automatically, so it's waiting for {cfg.owner_email} to approve."}
+            _landing.notify_slack(cfg, f":eyes: *{who}* asked to publish *{site}*: {summary.strip()}\nApprove: {pr['url']}")
+            return {"ok": True, "published": False, "pull_request": pr["url"], "next": f"Sent to {cfg.owner_email} for approval."}
     except Exception as e:  # noqa: BLE001
         return _landing_error(e)
 
